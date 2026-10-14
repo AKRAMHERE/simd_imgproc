@@ -1,0 +1,2 @@
+786 comparisons, 0 mismatches
+non-exact kernels (box, gauss): 84 of 12046200 pixels differ by one grey level (0.00070 %), worst difference 1

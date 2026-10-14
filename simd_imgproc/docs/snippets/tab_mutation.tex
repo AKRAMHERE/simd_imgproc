@@ -1,0 +1,12 @@
+Sobel: drop the weight 2 of the middle row & killed (tests) \\
+gray: green coefficient 150 -> 151 & killed (tests) \\
+Sobel: vector loop reads one byte past the row (result silently repaired by the scalar tail) & killed (AddressSanitizer) \\
+conv: copy one byte too many for the last partial block (writes into row padding) & killed (tests) \\
+conv: ring cache may evict a row that is still needed & killed (tests) \\
+conv: omit the lane-order fix after packus & killed (tests) \\
+conv: truncate instead of round (first vector of each group) & killed (tests) \\
+scalar Sobel: wrong right-border neighbour & killed (tests) \\
+scalar conv: clamp at 254 instead of 255 & killed (tests) \\
+scalar gray: rounding constant 128 -> 127 & killed (tests) \\
+OpenMP: last band loses its final row & killed (tests) \\
+Image: remove the page-multiple stride guard & killed (tests)

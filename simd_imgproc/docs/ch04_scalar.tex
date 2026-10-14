@@ -1,0 +1,62 @@
+\chapter{The scalar versions, and what the compiler does by itself}\label{ch:scalar}
+
+``Scalar'' means one number at a time: an ordinary loop. It is the baseline against which every speedup in this project is measured, so it must be (a) correct and (b) honest: not artificially slow.
+
+\section{The structure shared by all versions}
+
+Every implementation exposes the same three functions that compute only the output rows $y_0\dots y_1-1$:
+\begin{lstlisting}
+void rgbToGrayRows(const Image& src, Image& dst, int y0, int y1);
+void sobelRows(const Image& src, Image& dst, int y0, int y1);
+void convolveRows(const Image& src, Image& dst, const Kernel& k, int y0, int y1);
+\end{lstlisting}
+This tiny design decision pays for itself twice: OpenMP only has to hand each thread a range of rows (Chapter~\ref{ch:openmp}), and the tests can call the same row functions for any slice. The public functions in \file{dispatch.cpp} validate the arguments (sizes, channels, no overlap of source and destination, usable kernel) and then call the right implementation.
+
+\section{Three levels of ``slow'': reference, scalar, autovec}
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{2.3cm}p{12.3cm}@{}}
+\toprule
+\textbf{reference} & Written for obviousness. Every pixel read goes through a helper that clamps the coordinates; Sobel is computed from the two $3\times3$ kernels literally; convolution is a double loop in float \emph{with an explicit fused multiply-add}, and a double-precision twin. Used only by the tests.\\
+\textbf{scalar} & The code a careful programmer would write for speed: row pointers hoisted out of the loops, border pixels handled separately from the interior (so the interior has no clamping), \code{\_\_restrict} on pointers. Compiled with \code{-O3 -fno-tree-vectorize -fno-tree-slp-vectorize}: the auto-vectorizer is \textbf{off}.\\
+\textbf{autovec} & Exactly the same source file, compiled with plain \code{-O3}: the auto-vectorizer is \textbf{on} (but with only the baseline instruction set, SSE2, unless you build with \code{-march=native}).\\ \bottomrule
+\end{tabular}
+\end{center}
+
+\begin{plain}
+\textbf{Why two builds of the same source?} The compiler can already turn some loops into SIMD loops. If you compare hand-written AVX2 only with a loop that the compiler was forbidden to vectorize you exaggerate your speedup. Comparing with an auto-vectorized build too tells the truth: how much did the compiler give you for free, and what did the hand-written intrinsics add on top? Both are in \file{src/scalar\_impl.inc}, \#included into two translation units with different flags (\file{Makefile}). Both use \code{-ffp-contract=off} so that \code{a*b+c} stays a multiply followed by an add and the two builds give identical bits.
+\end{plain}
+
+\section{The scalar code}
+
+Three small helpers are shared by the loops: \code{clampInt} (limit an integer to a range, used for the replicated border), \code{sobelPixel} (the Sobel formula for one pixel, used for border pixels and tails by the AVX2 code too) and \code{roundClampF} (round-half-even and clamp to 0..255).
+
+\lstinputlisting{snippets/code_scalar_helpers.cpp}
+
+The row functions that use them:
+
+\lstinputlisting{snippets/code_scalar_gray_sobel.cpp}
+
+\lstinputlisting{snippets/code_scalar_conv.cpp}
+
+Points worth mentioning in a review:
+\begin{itemize}
+\item In Sobel, \code{sobelPixel} gets the row pointers $y-1,y,y+1$ \emph{already clamped} at the top and bottom of the image, and the clamped column indices. The interior loop (\code{x = 1 \dots{} w-2}) passes \code{x-1,x,x+1} with no clamping.
+\item In convolution the accumulation order is fixed: \code{j} (kernel row) outer, \code{i} (kernel column) inner. \textbf{This order is a contract.} All other versions use the same order for each output pixel, which is what makes them comparable bit for bit (Chapter~\ref{ch:numerics}).
+\item \code{roundClampF} uses \code{lrintf}, which rounds to nearest, ties to even (the default CPU rounding mode), the same rule as the AVX2 instruction \code{cvtps2dq}.
+\end{itemize}
+
+\section{What did the auto-vectorizer do?}
+
+The Makefile target \code{make vec-report} asks GCC to report every loop it vectorized in the auto-vectorized file (\code{-fopt-info-vec}). The result in this build:
+
+\input{snippets/vec_report}
+
+\begin{plain}
+\textbf{Why the natural convolution loop is not vectorized.} In the natural loop the $k^2$ taps of one output pixel are summed in the \emph{innermost} loops. There are two ways to use SIMD lanes on that: (a) vectorize the tap sum itself, which means adding the terms in a different order, and floating-point addition is not associative ($(a+b)+c\ne a+(b+c)$ in general), so GCC may not do it without \code{-ffast-math} (which also changes the results); or (b) vectorize over \emph{neighbouring pixels} (the outer $x$ loop), which keeps every pixel's order intact but requires vectorizing an outer loop that contains inner loops. For this loop nest the compiler's report says only ``loop nest containing two or more consecutive inner loops cannot be vectorized'' and fails the data-reference analysis of the inner loops; it does not say that associativity is the reason, and it would be wrong to claim so. What we can show by experiment: a programmer can restructure the loops so that pixels become the innermost dimension; \code{ablation::convolveAutoVecRowAcc} does that without changing a single bit of the result, GCC then vectorizes it, and Chapter~\ref{ch:bench} measures how far this gets compared with hand-written AVX2. Integer Sobel has no ordering problem and a simple loop, which is why GCC vectorizes it.
+\end{plain}
+
+\begin{sound}
+``Scalar and autovec are the same source compiled with and without the vectorizer, so the comparison with intrinsics is fair. GCC vectorizes the integer Sobel loop but not the natural float convolution loop nest; restructuring the loops so pixels are the innermost dimension makes it vectorize, with identical result bits.''
+\end{sound}

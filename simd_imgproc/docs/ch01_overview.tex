@@ -1,0 +1,81 @@
+\chapter{The big picture}\label{ch:overview}
+
+\section{What you built, in three sentences}
+
+You built a small C++ library that performs three classic image operations on 8-bit pictures: \textbf{colour to gray conversion}, \textbf{Sobel edge detection} and \textbf{2D convolution} (blur, sharpen, \dots\ with kernels of any odd size). Each operation exists in several versions that compute \emph{exactly the same thing} but use the processor differently: plain scalar code, the same code with the compiler's auto-vectorizer switched on, hand-written \textbf{AVX2} instructions that handle 8 to 32 numbers at once, and each of these split across several CPU cores with \textbf{OpenMP}. Then you measured how much faster each version is, checked that it is still correct, and looked for the reasons.
+
+\begin{plain}
+The one-sentence version for an interview: \emph{``I implemented grayscale, Sobel and 2D convolution in scalar, OpenMP and AVX2 form, proved the fast versions equal to a simple reference, and measured speedup, throughput and where each kernel is limited by compute or by memory.''}
+\end{plain}
+
+\section{The three operations and the four ways of running them}
+
+\begin{center}
+\begin{tikzpicture}[x=1cm,y=1cm,font=\footnotesize,
+  op/.style={draw=accent,fill=plainbg,minimum width=3.6cm,minimum height=0.9cm,align=center},
+  im/.style={draw=soundfg,fill=soundbg,minimum width=2.5cm,minimum height=0.8cm,align=center},
+  th/.style={draw=warnfg,fill=warnbg,minimum width=2.2cm,minimum height=0.8cm,align=center}]
+\node[op] (g) at (0,0) {RGB $\to$ gray\\\scriptsize integer, 3 channels in};
+\node[op] (s) at (0,-1.3) {Sobel edges\\\scriptsize integer, 3$\times$3};
+\node[op] (c) at (0,-2.6) {2D convolution\\\scriptsize float, $k\times k$ kernel};
+\node[im] (i1) at (5.2,0.0) {scalar};
+\node[im] (i2) at (5.2,-1.3) {auto-vectorized};
+\node[im] (i3) at (5.2,-2.6) {AVX2 intrinsics};
+\node[th] (t1) at (9.6,-0.65) {1 thread};
+\node[th] (t2) at (9.6,-1.95) {$N$ threads (OpenMP)};
+\foreach \a in {g,s,c} \foreach \b in {i1,i2,i3} \draw[gray!60] (\a.east) -- (\b.west);
+\foreach \a in {i1,i2,i3} \foreach \b in {t1,t2} \draw[gray!60] (\a.east) -- (\b.west);
+\node[above=2pt of g,font=\small\bfseries] {operation};
+\node[above=2pt of i1,font=\small\bfseries] {code};
+\node[above=2pt of t1,font=\small\bfseries,yshift=3pt] {threads};
+\end{tikzpicture}
+\end{center}
+
+Every operation is available in every combination ($3\times3\times2$). The \emph{correctness contract} is: all combinations produce the same pixels. For gray and Sobel the results are identical bit for bit. For convolution the AVX2 result is identical to a reference that uses fused multiply-adds, and the scalar result differs from it by at most one grey level in a handful of rare cases that this guide explains (Chapter~\ref{ch:numerics}).
+
+\section{What this project is and is not}
+
+Being precise about scope makes you more credible, so here it is plainly.
+
+\begin{itemize}
+\item \textbf{It is} a complete, tested, measured CPU-optimization study: three kernels, scalar/OpenMP/AVX2 implementations, a reference-based test suite (over 4 million checks including an exhaustive test of all 16.7 million RGB colours), a benchmark harness with a memory-bandwidth yardstick, and experiments on caches, strides, kernel sizes and threads.
+\item \textbf{It is not} a replacement for OpenCV, Intel IPP or NVIDIA NPP. It handles 8-bit images only, one border mode (edge replication), and square odd kernels. It does not use AVX-512, does not do tiling across multiple rows at once, and does not implement separable-kernel shortcuts. Chapter~\ref{ch:bench} compares it with OpenCV on one machine so you can speak about the gap honestly.
+\item \textbf{The numbers in this PDF} were measured in the sandbox where the code was written (a virtual machine with two cores). They show \emph{what the experiments look like and how to read them}. The \textbf{bwUniCluster numbers are yours to measure}: Chapter~\ref{ch:cluster} gives the exact steps and the scripts. Never quote a sandbox number as a cluster number.
+\end{itemize}
+
+\begin{warn}[Honesty rule for the interview]
+Say ``SIMD image processing library, grayscale / Sobel / convolution, scalar vs.\ OpenMP vs.\ AVX2'' exactly as the resume does. Anyone who knows SIMD will respect a precise list of what you implemented and what you deliberately left out far more than a vague claim like ``a high-performance imaging library''.
+\end{warn}
+
+\section{Where everything lives}
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{5.5cm}p{9.2cm}@{}}
+\toprule
+\textbf{File} & \textbf{What it does}\\ \midrule
+\file{include/simdip/image.hpp}, \file{src/image.cpp} & \code{Image}: aligned rows, stride, PNM file I/O, synthetic test images.\\
+\file{include/simdip/kernel.hpp}, \file{src/kernel.cpp} & Filter kernels (box, Gaussian, binomial, sharpen, \dots) and their validation.\\
+\file{include/simdip/ops.hpp} & The public API: \code{rgbToGray}, \code{sobel}, \code{convolve}, plus the reference and ablation functions.\\
+\file{src/scalar\_impl.inc} & The plain C++ code. Compiled twice: \file{scalar\_novec.cpp} (vectorizer off) and \file{scalar\_autovec.cpp} (vectorizer on).\\
+\file{src/avx2.cpp} & Hand-written AVX2 kernels.\\
+\file{src/dispatch.cpp} & Argument checks, CPU feature check, splitting rows over OpenMP threads.\\
+\file{src/reference.cpp} & Slow, obviously-correct reference implementations used by the tests.\\
+\file{apps/simdip\_cli.cpp}, \file{apps/simdip\_bench.cpp} & Command line tool; benchmark harness (CSV output).\\
+\file{tests/test\_main.cpp} & 24 test groups, no framework needed.\\
+\file{python/ref\_numpy.py}, \file{crosscheck.py} & Independent NumPy/SciPy model and the C++ vs.\ NumPy comparison.\\
+\file{python/compare\_opencv.py} & Agreement and speed comparison with OpenCV.\\
+\file{python/run\_experiments.py} & Runs experiments E1--E5 and writes the CSVs.\\
+\file{slurm/*.sbatch} & Job scripts for bwUniCluster 3.0.\\ \bottomrule
+\end{tabular}
+\end{center}
+
+\section{How to use this guide}
+
+\begin{enumerate}
+\item Read Chapters~\ref{ch:images}--\ref{ch:math} slowly, with the code open next to you. They explain the pictures, the three operations and the maths in plain language.
+\item Chapters~\ref{ch:scalar}--\ref{ch:conv} walk through the code: scalar, OpenMP, the SIMD basics, and the three AVX2 kernels.
+\item Chapters~\ref{ch:cache}--\ref{ch:testing} are the engineering: cache behaviour, numerical accuracy, testing. This is what turns ``I wrote intrinsics'' into ``I know why it is fast and why it is correct''.
+\item Chapter~\ref{ch:bench} shows the measurements; Chapter~\ref{ch:cluster} is the step-by-step bwUniCluster guide. Chapters~\ref{ch:resume}--\ref{ch:drills} are the interview material.
+\end{enumerate}
+Each chapter ends with an \textbf{Interview soundbite} you can say aloud in thirty seconds.

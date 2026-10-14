@@ -1,0 +1,12 @@
+KILLED | src/avx2.cpp | Sobel: drop the weight 2 of the middle row | 508 failures
+KILLED | src/avx2.cpp | gray: green coefficient 150 -> 151 | 759 failures
+KILLED | src/avx2.cpp | Sobel: vector loop reads one byte past the row (result silently repaired by the scalar tail) | AddressSanitizer
+KILLED | src/avx2.cpp | conv: copy one byte too many for the last partial block (writes into row padding) | 33 failures
+KILLED | src/avx2.cpp | conv: ring cache may evict a row that is still needed | 3893853 failures
+KILLED | src/avx2.cpp | conv: omit the lane-order fix after packus | 2311860 failures
+KILLED | src/avx2.cpp | conv: truncate instead of round (first vector of each group) | 1469 failures
+KILLED | src/scalar_impl.inc | scalar Sobel: wrong right-border neighbour | 1776 failures
+KILLED | src/scalar_impl.inc | scalar conv: clamp at 254 instead of 255 | 46 failures
+KILLED | src/scalar_impl.inc | scalar gray: rounding constant 128 -> 127 | 444 failures
+KILLED | src/dispatch.cpp | OpenMP: last band loses its final row | 6289 failures
+KILLED | src/image.cpp | Image: remove the page-multiple stride guard | 4 failures

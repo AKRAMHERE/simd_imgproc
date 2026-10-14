@@ -1,0 +1,103 @@
+\chapter{Interview questions and answers}\label{ch:qa}
+
+\newcommand{\qa}[2]{\par\medskip\noindent\textbf{Q. #1}\par\noindent #2\par}
+
+Answers are written to be said aloud in 20--60 seconds. Numbers that depend on the machine are marked \emph{[yours]}: use your cluster value, or say ``on my test machine'' if you quote the sandbox figure.
+
+\section{Orientation}
+
+\qa{Describe the project in thirty seconds.}{A C++ image-processing library with three operations, RGB-to-gray, Sobel edge strength and $k\times k$ convolution, each in a scalar version, a compiler-vectorized version and a hand-written AVX2 version, and each parallelizable over rows with OpenMP. I wrote a test suite that checks all combinations against a reference, including bit-exact checks for the floating-point convolution, and a benchmark harness whose results I measured on bwUniCluster. The point was to understand what the hardware does with these kernels and to be able to explain each speedup.}
+
+\qa{What is the single most important result?}{That the three kernels sit at different places on the roofline. Gray and Sobel stream pixels and end up limited by memory bandwidth after vectorization; convolution does $2k^2$ flops per pixel and is limited by the FMA units. So the extra work of intrinsics paid off most for convolution \emph{[yours: AVX2 over scalar single core]}, and OpenMP scaling flattens for gray and Sobel when bandwidth saturates \emph{[yours: thread count]}.}
+
+\qa{What would you do differently or next?}{Row blocking in the convolution (compute two or four output rows from each loaded float row to cut loads), separable-kernel detection (a $k\times k$ separable kernel is $2k$ taps instead of $k^2$), non-temporal stores for large images, an AVX-512 path with a run-time dispatch, first-touch parallel initialisation for NUMA, and a GPU port of the same three kernels for comparison.}
+
+\section{SIMD and AVX2}
+
+\qa{What is SIMD, and what is the vector width here?}{One instruction operating on several data elements. An AVX2 register is 256 bits: 32 bytes, 16 16-bit integers or 8 floats. Gray and Sobel process 16 pixels per iteration in 16-bit lanes; the convolution processes 8 pixels per FMA, 64 per block of 8 accumulators.}
+
+\qa{Why 16-bit lanes for gray and Sobel?}{The intermediate values fit: the gray sum is at most 65\,408 (unsigned 16-bit); Sobel magnitudes at most 2040 (signed 16-bit). Using 32-bit lanes would halve the pixels per instruction for no benefit.}
+
+\qa{AVX2 \code{packus} gives scrambled pixel order. Why, and how do you fix it?}{AVX2 integer instructions mostly work independently in each 128-bit half. \code{packus} packs the low halves of both inputs into the low half of the result and the high halves into the high half, so the 64-bit quarters come out in the order 0, 2, 1, 3. A \code{permute4x64} with the right selector (or \code{permutevar8x32} after a 32-bit pack) restores the order.}
+
+\qa{How do you deinterleave RGB in the grayscale kernel?}{Three 16-byte loads cover 16 pixels (48 bytes). Each of R, G, B is spread over all three registers in a stride-3 pattern, so for each colour I use one \code{pshufb} per register with a constant mask that picks the right bytes (and zeros the others with index \code{0x80}), then OR the three results. 9 shuffles and 6 ORs. The masks are compile-time constants.}
+
+\qa{Why do the loads happen at \code{x-1}, \code{x} and \code{x+1} in Sobel rather than shuffling?}{Unaligned loads on current cores are cheap when they do not cross a cache line, and three loads per row avoids lane-crossing shuffles. The price is some redundant cache traffic, which stays in L1.}
+
+\qa{Aligned versus unaligned loads: does it matter?}{On recent Intel and AMD cores an unaligned load that stays within a cache line costs the same as an aligned one; one that splits a line costs more. I align the rows to 64 bytes so that row starts are line-aligned, but kernels read at arbitrary $x$, so I use unaligned instructions throughout.}
+
+\qa{What happens on a CPU without AVX2?}{The library checks \code{\_\_builtin\_cpu\_supports} at run time and throws if AVX2 is requested but not available; scalar and autovec still work. The AVX2 file is the only one compiled with \code{-mavx2 -mfma}, so no AVX2 instruction can leak into code that runs before the check.}
+
+\qa{Why not \code{-march=native} for everything?}{The binary then only runs on that CPU type (an ``illegal instruction'' on another cluster partition), and the compiler may fuse multiply-adds in the ``scalar'' code, silently changing numerical results. I keep the three implementations' flags explicit and test them separately.}
+
+\qa{What did the auto-vectorizer do?}{GCC vectorized the Sobel loop with 16-byte (SSE2) vectors, did not vectorize gray or the natural convolution loop nest. For the convolution the report names the loop-nest structure. When I rewrote the loop to accumulate whole rows, GCC vectorized it with identical output bits and got to about 1/\ratioRowAccToAvx\ of the AVX2 kernel. So: it helps, it needs coaxing, and it did not match hand-written register blocking.}
+
+\section{Convolution}
+
+\qa{Explain the convolution kernel's structure.}{For each output row: convert the one new source row to float into a ring of $k$ padded rows (border replicated, so no border logic in the inner loop); then for blocks of 64 output pixels hold 8 float accumulators in registers; for each of the $k^2$ taps broadcast the weight and do 8 FMAs reading from the padded rows; finally convert to int with rounding, pack with saturation, fix the lane order, store.}
+
+\qa{Why eight accumulators?}{FMA latency is about four cycles and a core can start two per cycle, so at least eight independent chains are needed to keep both units busy. I measured it: 4 accumulators are \ratioAccFourNine$\times$ slower at $k=9$ on my sandbox core.}
+
+\qa{Why convert to float once per row?}{A source pixel is used $k^2$ times. Converting for every tap spends instructions that compete with the FMAs; the per-tap variant measured \ratioPerTapNine$\times$ slower at $k=9$.}
+
+\qa{What stops you from reaching the FMA peak?}{I did not profile it down to the cause, so this is a hypothesis: per tap the kernel issues 8 FMAs but 9 loads (8 vectors from the ring plus the broadcast weight), and a core with two load ports and two FMA ports would then be load-bound at about 8/9 of the FMA peak, plus the overhead of the row conversion and stores. On the sandbox core I reached about \fracOfNominalPeak\,\% of the nominal peak \emph{[yours]}, which is consistent with that but does not prove it. The way to test it is hardware counters (\code{perf stat}) or a variant with fewer loads, such as blocking over two output rows, where each loaded vector feeds two sets of accumulators.}
+
+\qa{How do you handle the border?}{Replicate the edge pixel. In the convolution, the padded float row has $r$ extra entries on each side so there is no condition in the inner loop. In $y$ the ring is indexed by clamped source row, so row 0 can appear several times. In Sobel the first and last columns go through a scalar helper.}
+
+\qa{Why is the result bit-identical to your reference but not to scalar?}{Because the AVX2 code uses fused multiply-adds (one rounding) and the scalar code does a multiply and an add (two roundings). The reference uses \code{fmaf} in the same order, so it matches AVX2 exactly. Scalar differs from it by at most one grey level, only on rare near-ties. For binomial kernels everything is exact and all agree with zero tolerance.}
+
+\qa{What about a separable kernel?}{A separable $k\times k$ kernel (Gaussian, box) is an outer product of two vectors, so it can be applied as a horizontal then a vertical pass: $2k$ taps instead of $k^2$. My library does not exploit this; it treats the kernel as general. With a $9\times9$ Gaussian, the separable version would do about $4.5\times$ less arithmetic but needs a temporary image, which changes the memory behaviour. I would implement it as the next step.}
+
+\section{OpenMP and memory}
+
+\qa{How is the work divided?}{The image is cut into $n$ contiguous row bands. Each thread writes only its own rows and reads the source, so there are no data races and the output is independent of the thread count; the tests check this for 1 to 200 threads.}
+
+\qa{Why does gray stop scaling?}{It reads 3 bytes and writes 1 per pixel with very little arithmetic, so after vectorization the memory bandwidth limits it. One core cannot saturate the memory controllers, so scaling is good up to a point and then flat. My memcpy yardstick shows the ceiling \emph{[yours: threads at which memcpy flattens]}.}
+
+\qa{What is false sharing, and does it occur here?}{Two threads writing different variables in the same cache line force that line to bounce between cores. Here threads write different rows of the output; only at band boundaries could two threads touch the same line, and with 64-byte-aligned rows that does not happen unless the stride is not a multiple of 64.}
+
+\qa{What is NUMA, and why do you pin threads?}{On a multi-socket node each socket has its own memory; accessing the other socket's memory is slower. \code{OMP\_PROC\_BIND=close} and \code{OMP\_PLACES=cores} keep threads on distinct physical cores near each other. A fuller solution initialises the image in parallel with the same band layout so each page is local to the thread that uses it (first touch). I did not implement that.}
+
+\qa{Why avoid a stride of exactly 4096 bytes?}{Addresses a multiple of 4096 apart map to the same L1 set (4K aliasing; also associativity conflicts in L2), and Sobel reads three rows and writes one at the same column. In my measurements on the sandbox the effect was inside run-to-run noise; on the cluster \emph{[yours]}. The padding is cheap (1.6\,\%) insurance against a failure mode the theory predicts.}
+
+\section{Numerics and testing}
+
+\qa{How do you know the AVX2 grayscale is correct?}{It is checked for all 16\,777\,216 colours against the reference, plus edge sizes, strides and thread counts. That is exhaustive for the arithmetic; the remaining risk is the data movement at row ends, which the edge-size and no-padding tests with AddressSanitizer cover.}
+
+\qa{What is the error of your float32 convolution?}{A bound of $\gamma_n\cdot255\sum|w|$ with $n=k^2$; the largest measured error was \errBoundRatio\ of that bound. In output terms an error matters only when the exact sum is within about $10^{-4}$ of a rounding boundary, and then the result changes by one grey level.}
+
+\qa{Why round-half-even?}{It is IEEE's default, what \code{cvtps\_epi32} and \code{lrintf} do, and it avoids a statistical bias that round-half-up introduces. It also makes scalar and vector code agree on exact ties.}
+
+\qa{What is mutation testing and what did it find?}{Seed a deliberate bug, run the tests, and see whether the suite fails. Of twelve mutants, one initially survived: a vector over-read that the scalar tail then repaired. My allocator rounded sizes up and hid the over-read from AddressSanitizer. I made allocation exact, added unpadded-image tests, and now all twelve are caught.}
+
+\section{Benchmarks}
+
+\qa{How do you benchmark?}{Warm up twice, calibrate the number of iterations so one sample lasts at least 20 ms, take 7 to 9 samples and report the median with min and max; images allocated and touched before timing; thread placement pinned; compiler, CPU and \code{OMP\_*} variables printed with the results. Single-thread numbers use one core only.}
+
+\qa{Why median rather than mean or minimum?}{On a shared machine an occasional disturbance inflates a sample; the mean follows it, the median does not. I also keep the minimum as the best case. For a deterministic kernel the minimum is a good estimator of the undisturbed time, the median is a more honest typical value.}
+
+\qa{How reproducible were your numbers?}{On the sandbox VM the AVX2 timings repeated within a few percent, but the scalar baseline differed by a median of \betweenScalarMed\,\% (up to \betweenScalarMax\,\%) between two passes of the same command, so I report speedups as approximate and only interpret large differences. On the cluster \emph{[yours: spread between repeated jobs]}.}
+
+\qa{Did you compare against OpenCV?}{Yes, single-threaded, on one machine. AVX2 gray and convolution were \ocvGray--\ocvConvNine$\times$ faster than the corresponding OpenCV calls, Sobel \ocvSobel$\times$, but that last figure compares a fused single pass with a multi-call OpenCV pipeline, and OpenCV's gray uses more precise 14-bit coefficients. OpenCV supports many more types and border modes. I treat it as a sanity check, not a claim.}
+
+\section{Connecting to GPU-oriented image and data-processing libraries}
+
+\begin{warn}
+This project is CPU-only. I have not implemented it on a GPU, and you should say so. What you \emph{can} do is show that you understand how the same three kernels map to a GPU, which is relevant for a team that builds GPU image and data-processing libraries. The library names below (NPP, nvJPEG, DALI, CV-CUDA) are NVIDIA products as far as I know; confirm what the team on the job posting actually works on before quoting any of it.
+\end{warn}
+
+\qa{How does your CPU design map to a GPU?}{SIMD lanes correspond to threads of a warp executing in lock-step (SIMT); a block of 64 pixels in registers corresponds to a thread computing several outputs; the ring of float rows in L2 corresponds to a tile with halo in shared memory; contiguous 16-byte loads correspond to coalesced global-memory access; the roofline analysis is identical, with a much higher compute ceiling and a bandwidth ceiling that matters even more.}
+
+\qa{How would you write the convolution on a GPU?}{Each thread block loads a tile of the source plus a halo of $r$ pixels into shared memory (border replicated while loading), synchronises, then each thread computes one or a few output pixels from shared memory with the weights in constant memory or registers. Choices: tile size versus occupancy, bank conflicts in shared memory, using 4 pixels per thread with vector loads. For large $k$ and separable kernels, two passes. I would measure against the bandwidth of a copy kernel, exactly as with \code{memcpy} here.}
+
+\qa{What would you test differently on a GPU?}{The same layers: reference equivalence over edge sizes (block and tile boundaries are the analogue of vector tails), bit-exactness where the arithmetic is integer, an FMA-ordered reference for float, tests for different strides and pitched allocations, and a race and out-of-bounds checker (the analogue of AddressSanitizer is \code{compute-sanitizer}).}
+
+\qa{Do you know CUDA?}{Answer truthfully. If you have not written kernels, say what you do know (the execution model, memory hierarchy, coalescing, occupancy) and that this project is the CPU version of the same engineering questions.}
+
+\section{Questions to ask them}
+
+\begin{itemize}
+\item Which operations and data types (8-bit, 16-bit, float) dominate your library's use, and how do you decide when a hand-tuned path is worth maintaining?
+\item How do you validate numerical equivalence between a CPU reference and the optimized implementation (bit-exact, ULP tolerance, or application-level)?
+\item What does the performance-regression process look like: which benchmarks, which hardware, which noise tolerance?
+\end{itemize}

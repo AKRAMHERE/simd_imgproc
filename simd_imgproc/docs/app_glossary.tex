@@ -1,0 +1,35 @@
+\chapter{Glossary}
+
+\begin{description}[leftmargin=3.4cm,style=nextline,itemsep=3pt]
+\item[ablation] An experiment that removes or changes one design decision to measure what it was worth.
+\item[accumulator] A register that holds a running sum; the convolution keeps eight per block of 64 pixels.
+\item[Amdahl's law] Speedup on $n$ threads is at most $1/(s+(1-s)/n)$ if a fraction $s$ is serial.
+\item[ASAN] AddressSanitizer: a compiler option that checks every memory access for out-of-bounds use.
+\item[AVX2] Advanced Vector Extensions 2: 256-bit integer and floating-point vector instructions on x86-64.
+\item[band] A contiguous group of image rows given to one OpenMP thread.
+\item[binomial kernel] A smoothing kernel from Pascal's triangle; exact in binary floating point for small sizes.
+\item[broadcast] Copying one scalar into every lane of a vector register.
+\item[cache line] The 64-byte unit in which memory moves between cache levels.
+\item[clamp] Limit a value to a range, e.g.\ to 0..255; also ``clamp to edge'', the border rule that repeats the outermost pixel.
+\item[correlation / convolution] Sliding a kernel over an image and summing weight times pixel. Strictly, convolution flips the kernel; this library does the unflipped version (correlation), as most image libraries do.
+\item[deinterleave] Separate packed RGBRGB\dots\ bytes into separate R, G, B vectors.
+\item[FMA] Fused multiply-add: $a\cdot b+c$ with one rounding.
+\item[first touch] On NUMA machines, a memory page is placed near the thread that first writes it.
+\item[GFLOP/s] $10^9$ floating-point operations per second; a multiply and an add count as two.
+\item[lane] One element position inside a vector register (8 lanes of float in 256 bits).
+\item[Lmod / module] The software-environment tool on the cluster.
+\item[memory-bound / compute-bound] Limited by data movement versus by arithmetic throughput.
+\item[mutation testing] Seeding bugs to check whether the tests notice.
+\item[NUMA] Non-uniform memory access: memory attached to one socket is slower to reach from another.
+\item[OpenMP] A compiler-directive standard for shared-memory parallelism (\code{\#pragma omp \dots}).
+\item[pshufb] Byte shuffle within each 128-bit half of an AVX2 register.
+\item[roofline] A plot of attainable performance versus arithmetic intensity bounded by peak compute and memory bandwidth.
+\item[SIMD] Single instruction, multiple data.
+\item[SIMT] Single instruction, multiple threads: the GPU execution model.
+\item[Slurm] The job scheduler of the cluster.
+\item[stride (pitch)] The number of bytes from the start of one image row to the next.
+\item[tail] The last few elements of a row that do not fill a whole vector.
+\item[ties-to-even] Rounding rule: exact halves go to the nearest even integer.
+\item[TLB] Translation lookaside buffer: the cache of virtual-to-physical address translations.
+\item[working set] The data that a loop reuses and that should stay in cache.
+\end{description}

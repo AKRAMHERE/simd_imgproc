@@ -1,0 +1,65 @@
+\chapter{Step 0: what an image is, to a computer}\label{ch:images}
+
+\section{Pixels are bytes}
+
+A grayscale picture is a grid of numbers from 0 (black) to 255 (white). One number fits in one \emph{byte} (8 bits), and that byte is called a \emph{pixel}. A colour picture has three numbers per pixel: how much red, green and blue light. A $1920\times1080$ gray image is about 2\,MB; the same picture in colour is about 6\,MB.
+
+\begin{plain}
+\textbf{Why 8 bits?} It is what cameras, screens and JPEG files use, and it keeps the data small. The price is that arithmetic on pixels easily overflows: $200+100$ does not fit in a byte. Much of the care in this project is about doing arithmetic in wider types (16-bit integers or 32-bit floats) and converting back with \emph{clamping} (values above 255 become 255, below 0 become 0).
+\end{plain}
+
+\section{How the grid is laid out in memory}
+
+Memory is a long line of bytes, so the 2D grid has to be flattened. We store it \textbf{row by row} (``row-major''), and for colour images the three channels of one pixel sit next to each other (``interleaved'': \code{R G B R G B \dots}).
+
+\begin{center}
+\begin{tikzpicture}[x=0.52cm,y=0.9cm,font=\scriptsize]
+\foreach \i in {0,...,8} { \node[draw,fill=plainbg,minimum width=0.52cm,minimum height=0.55cm,inner sep=0] at (\i,0) {}; }
+\foreach \i in {9,10,11} { \node[draw,fill=warnbg,draw=warnfg,minimum width=0.52cm,minimum height=0.55cm,inner sep=0] at (\i,0) {}; }
+\foreach \i in {12,...,20} { \node[draw,fill=plainbg,minimum width=0.52cm,minimum height=0.55cm,inner sep=0] at (\i,0) {}; }
+\foreach \i in {21,22,23} { \node[draw,fill=warnbg,draw=warnfg,minimum width=0.52cm,minimum height=0.55cm,inner sep=0] at (\i,0) {}; }
+\draw[decorate,decoration={brace,amplitude=3pt}] (-0.4,0.45) -- node[above=2pt]{row 0: \code{width} pixels} (8.4,0.45);
+\draw[decorate,decoration={brace,amplitude=3pt,raise=0pt}] (8.6,0.45) -- node[above=2pt,text=warnfg]{padding} (11.4,0.45);
+\draw[decorate,decoration={brace,amplitude=3pt}] (11.6,0.45) -- node[above=2pt]{row 1} (20.4,0.45);
+\draw[<->] (-0.4,-0.65) -- node[below]{\code{stride} (bytes from the start of one row to the start of the next)} (11.6,-0.65);
+\end{tikzpicture}
+\end{center}
+
+The address of the pixel in column $x$ and row $y$ is
+\[
+\text{address}(x,y)=\text{base}+y\cdot\text{stride}+x\cdot\text{channels}.
+\]
+The \textbf{stride} is at least the row length, and may be larger: the extra bytes are \emph{padding}. Real image libraries do this for two reasons, and so does this one:
+\begin{enumerate}
+\item \textbf{Alignment}: every row starts at a multiple of 64 bytes (the size of a cache line), which makes vector loads and stores efficient.
+\item \textbf{Avoiding a cache trap}: if the stride is an exact multiple of 4096 bytes (a page), rows that are read together can fight for the same few cache slots. \code{Image::defaultStride()} adds one cache line in that case (Chapter~\ref{ch:cache} measures whether it matters on your machine).
+\end{enumerate}
+The kernels never read or write the padding as pixels; a test fills the padding with a marker value and checks that it is unchanged afterwards (\code{outputs\_never\_touch\_the\_row\_padding}).
+
+\section{The Image class}
+
+\lstinputlisting{snippets/code_image_class.cpp}
+
+Notes on what a reviewer looks for: ownership is by a \code{unique\_ptr} with a custom deleter (no leaks, no manual \code{free}); copying is deep, moving is cheap; the constructor validates sizes; memory is touched (zeroed) at construction so that page faults happen \emph{before} any timing starts; and \code{alignedAlloc} requests the \emph{exact} number of bytes, so a sanitizer (AddressSanitizer) sees where the buffer really ends and reports a vector load that reads even one byte too far.
+
+\section{What happens at the edges?}
+
+A $3\times3$ filter looking at a pixel in the first column needs a neighbour that does not exist. Some choice must be made; the choice is a \emph{border mode}. Ours is \textbf{replicate} (also called ``clamp to edge''): a missing pixel takes the value of the nearest real one. This is OpenCV's \code{BORDER\_REPLICATE}, and it never invents dark or bright values.
+
+\begin{center}
+\begin{tikzpicture}[x=0.62cm,y=0.62cm,font=\scriptsize]
+\foreach \x/\y/\v in {0/0/a,1/0/b,2/0/c,0/1/d,1/1/e,2/1/f,0/2/g,1/2/h,2/2/i} {
+  \node[draw,fill=plainbg,minimum size=0.62cm,inner sep=0] at (\x,-\y) {\v};
+}
+\foreach \y in {0,1,2} { \node[draw,fill=warnbg,draw=warnfg,minimum size=0.62cm,inner sep=0] at (-1,-\y) {\ifcase\y a\or d\or g\fi};
+                         \node[draw,fill=warnbg,draw=warnfg,minimum size=0.62cm,inner sep=0] at (3,-\y) {\ifcase\y c\or f\or i\fi}; }
+\foreach \x in {0,1,2} { \node[draw,fill=warnbg,draw=warnfg,minimum size=0.62cm,inner sep=0] at (\x,1) {\ifcase\x a\or b\or c\fi};
+                         \node[draw,fill=warnbg,draw=warnfg,minimum size=0.62cm,inner sep=0] at (\x,-3) {\ifcase\x g\or h\or i\fi}; }
+\foreach \px/\py/\v in {-1/1/a,3/1/c,-1/-3/g,3/-3/i} { \node[draw,fill=warnbg,draw=warnfg,minimum size=0.62cm,inner sep=0] at (\px,\py) {\v}; }
+\node[anchor=west,font=\footnotesize,text width=7cm] at (4.2,-1) {The $3\times3$ image (blue) with its replicated border (orange). A $3\times3$ filter centred on the top-left pixel \code{a} sees \code{a a b / a a b / d d e}.};
+\end{tikzpicture}
+\end{center}
+
+\begin{sound}
+``Images are stored row-major with a stride, 64-byte aligned rows, and edge-replicated borders. The stride is padded so rows are cache-line aligned and never an exact multiple of a page; the kernels never touch the padding, which a test verifies.''
+\end{sound}

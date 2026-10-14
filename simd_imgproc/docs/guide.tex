@@ -1,0 +1,136 @@
+\documentclass[11pt,a4paper]{report}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{mathptmx}
+\usepackage[scaled=0.9]{helvet}
+\usepackage{courier}
+\DeclareFontFamily{T1}{pcrs}{\hyphenchar\font=-1}
+\DeclareFontShape{T1}{pcrs}{m}{n}{<->s*[0.84]pcrr8t}{}
+\DeclareFontShape{T1}{pcrs}{m}{sl}{<->s*[0.84]pcrro8t}{}
+\DeclareFontShape{T1}{pcrs}{m}{it}{<->ssub*pcrs/m/sl}{}
+\DeclareFontShape{T1}{pcrs}{b}{n}{<->s*[0.84]pcrb8t}{}
+\DeclareFontShape{T1}{pcrs}{bx}{n}{<->ssub*pcrs/b/n}{}
+\renewcommand{\ttdefault}{pcrs}
+\usepackage[margin=2.4cm,top=2.4cm,bottom=2.4cm]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc,fit,decorations.pathreplacing}
+\usepackage[most]{tcolorbox}
+\usepackage{listings}
+\usepackage[hidelinks,pdfusetitle]{hyperref}
+\usepackage{caption}
+
+\setlist{itemsep=2pt,topsep=4pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+\captionsetup{font=small,labelfont=bf}
+
+% ---------- colours
+\definecolor{accent}{HTML}{1F5FA8}
+\definecolor{plainbg}{HTML}{EEF5FC}
+\definecolor{soundbg}{HTML}{EAF6EC}
+\definecolor{soundfg}{HTML}{2E7D32}
+\definecolor{warnbg}{HTML}{FFF4E0}
+\definecolor{warnfg}{HTML}{B26A00}
+\definecolor{codebg}{HTML}{F7F7F7}
+\definecolor{codecomment}{HTML}{4F7F4F}
+
+% ---------- boxes
+\newtcolorbox{plain}[1][In plain words]{enhanced,breakable,colback=plainbg,colframe=accent,
+  boxrule=0.5pt,left=6pt,right=6pt,top=4pt,bottom=4pt,fonttitle=\bfseries\small,title={#1}}
+\newtcolorbox{sound}[1][Interview soundbite]{enhanced,breakable,colback=soundbg,colframe=soundfg,
+  boxrule=0.5pt,left=6pt,right=6pt,top=4pt,bottom=4pt,fonttitle=\bfseries\small,title={#1}}
+\newtcolorbox{warn}[1][Careful]{enhanced,breakable,colback=warnbg,colframe=warnfg,
+  boxrule=0.5pt,left=6pt,right=6pt,top=4pt,bottom=4pt,fonttitle=\bfseries\small,title={#1}}
+
+% ---------- code listings
+\lstdefinestyle{cpp}{language=C++,basicstyle=\ttfamily\footnotesize,columns=fullflexible,keepspaces=true,
+  breaklines=true,breakatwhitespace=false,commentstyle=\color{codecomment}\itshape,keywordstyle=\color{accent}\bfseries,
+  backgroundcolor=\color{codebg},frame=single,rulecolor=\color{black!20},framesep=4pt,xleftmargin=4pt,xrightmargin=4pt,
+  showstringspaces=false,aboveskip=6pt,belowskip=6pt}
+\lstdefinestyle{shell}{language=bash,basicstyle=\ttfamily\footnotesize,columns=fullflexible,keepspaces=true,breaklines=true,
+  backgroundcolor=\color{codebg},frame=single,rulecolor=\color{black!20},framesep=4pt,xleftmargin=4pt,xrightmargin=4pt,
+  commentstyle=\color{codecomment}\itshape,showstringspaces=false,aboveskip=6pt,belowskip=6pt,
+  morekeywords={sbatch,salloc,squeue,scancel,module,make,rsync,ssh,scp,ws_allocate,ws_find,ws_list,ws_extend,srun}}
+\lstset{style=cpp}
+\DeclareRobustCommand{\_}{\textunderscore\allowbreak{}}
+\emergencystretch=2em
+\newcommand{\inputrows}[1]{\input{#1}\\ \bottomrule}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\file}[1]{\texttt{#1}}
+
+% ---------- headings / header
+\titleformat{\chapter}[display]{\normalfont\huge\bfseries\color{accent}}{\chaptertitlename\ \thechapter}{8pt}{\Huge}
+\titlespacing*{\chapter}{0pt}{-10pt}{18pt}
+\titleformat{\section}{\normalfont\Large\bfseries\color{accent}}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{0.7em}{}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{\small\nouppercase{\leftmark}}\fancyhead[R]{\small SIMD Image Processing Library}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+\input{snippets/macros}
+
+\begin{document}
+
+% ============================================================ title page
+\begin{titlepage}
+\centering
+\vspace*{2.2cm}
+{\Huge\bfseries\color{accent} SIMD Image Processing Library\par}
+\vspace{0.3cm}
+{\LARGE CPU optimization: scalar, OpenMP, AVX2\par}
+\vspace{0.4cm}
+{\LARGE The complete guide\par}
+\vspace{0.8cm}
+{\large what it is, why it is fast, how the code does it,\\ how to run it on bwUniCluster, and how to talk about it\par}
+\vspace{1.4cm}
+\begin{tcolorbox}[colback=plainbg,colframe=accent,width=0.82\textwidth,boxrule=0.5pt]
+\raggedright
+\textbf{Written for:} Syed Akram Ameer Abbas\\
+\textbf{Project:} ``SIMD Image Processing Library -- CPU Optimization'' (C++, AVX2, OpenMP, Python), project 1 on the resume\\
+\textbf{Level of the implementation:} what a solid M.Sc.\ graduate in an embedded / computing programme would build: readable, tested, measured, and honest about its limits\\
+\textbf{Target:} bwUniCluster 3.0 (KIT), GNU toolchain, Slurm\\
+\textbf{Code:} the \file{simd\_imgproc/} directory delivered together with this PDF
+\end{tcolorbox}
+\vfill
+{\small Everything printed in this guide as a number, table, figure or listing was produced by the code in the project:\\
+no value was typed in by hand. Where a number is \emph{yours to measure} (the cluster benchmarks), the guide says so.\par}
+\end{titlepage}
+
+\tableofcontents
+
+% ============================================================ chapters
+\input{ch01_overview}
+\input{ch02_images}
+\input{ch03_math}
+\input{ch04_scalar}
+\input{ch05_openmp}
+\input{ch06_simd}
+\input{ch07_gray}
+\input{ch08_sobel}
+\input{ch09_conv}
+\input{ch10_cache}
+\input{ch11_numerics}
+\input{ch12_testing}
+\input{ch13_bench}
+\input{ch14_running}
+\input{ch15_cluster}
+\input{ch16_resume}
+\input{ch17_qa}
+\input{ch18_drills}
+\appendix
+\input{app_glossary}
+
+\end{document}

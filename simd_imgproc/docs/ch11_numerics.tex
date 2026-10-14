@@ -1,0 +1,81 @@
+\chapter{Numerics: what ``the same result'' means}\label{ch:numerics}
+
+A SIMD library is only useful if its output can be trusted. This chapter defines exactly what is promised for each operation, and why the promise for convolution has to be stated more carefully than for the other two.
+
+\section{Integer operations: exact}
+
+Gray and Sobel use integers only. Integer addition and multiplication are exact as long as the numbers fit in the type; the proof that they fit is a short calculation (Chapter~\ref{ch:math}):
+\begin{itemize}
+\item gray: $77R+150G+29B+128\le255\cdot256+128=65\,408<2^{16}$, so unsigned 16-bit lanes never wrap. The test \code{gray\_exhaustive\_all\_16777216\_colours} does not rely on the proof alone: it feeds \emph{every one} of the $2^{24}$ possible colours through the AVX2, the scalar and the reference code and compares.
+\item Sobel: $|G_x|,|G_y|\le1020$, $|G_x|+|G_y|\le2040<2^{15}$, so signed 16-bit lanes are enough.
+\end{itemize}
+Because there are no rounding errors, every implementation must give \textbf{identical bytes}, and every test of these two operations demands zero difference.
+
+\section{Floating point in one page}
+
+A 32-bit float stores a number as $\pm m\cdot2^{e}$ with a 24-bit significand $m$. Consequences:
+\begin{itemize}
+\item Not every number is representable: $0.1$ is not. Each arithmetic result is \textbf{rounded} to the nearest representable value. The relative error of one rounding is at most $u=2^{-24}\approx6\cdot10^{-8}$ (``unit roundoff'').
+\item Addition is \textbf{not associative}: $(a+b)+c$ and $a+(b+c)$ can differ in the last bit. The order of the operations is part of the definition of the result.
+\item A \textbf{fused multiply-add} (FMA) computes $a\cdot b+c$ with \emph{one} rounding instead of two. It is faster and slightly more accurate, but gives a \emph{different} last bit than multiply-then-add.
+\end{itemize}
+
+\begin{plain}
+Think of rounding as measuring with a ruler that has a mark every millimetre. Add up a thousand lengths, rounding after every addition, and the total can be a millimetre or two off, and the \emph{size} of that error depends on the order in which you added. Nobody is wrong; the order is simply part of the recipe.
+\end{plain}
+
+\section{The convolution contract}
+
+For one output pixel the library computes
+\[
+s=\sum_{j=0}^{k-1}\sum_{i=0}^{k-1}w_{ji}\,p_{ji},\qquad \text{out}=\operatorname{clamp}\bigl(\operatorname{rne}(s),0,255\bigr),
+\]
+with the summation order \textbf{fixed}: $j$ outer, $i$ inner, starting from $0$. ``rne'' is round to nearest, ties to even (the default IEEE mode: $0.5\to0$, $1.5\to2$, $2.5\to2$). Two families of implementations follow this recipe, differing in one thing only:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+family & each step is & produced by\\
+\midrule
+FMA family & $\text{acc}\leftarrow\operatorname{fma}(w,p,\text{acc})$ (one rounding) & AVX2 kernels and \code{reference::convolveFmaFloat}\\
+two-rounding family & $\text{acc}\leftarrow\operatorname{fl}(\text{acc}+\operatorname{fl}(w\cdot p))$ & scalar, autovec, row-accumulate rewrite\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The build flags make this explicit: the scalar and autovec translation units are compiled with \code{-ffp-contract=off}, which forbids the compiler from silently turning multiply-add pairs into FMAs. Without that flag a build with \code{-march=native} would change the numerical results of ``scalar'' behind the programmer's back, and the claim ``these two are bit-identical'' would hold on one machine and fail on another.
+
+What the tests then establish, in the order of strength:
+\begin{enumerate}
+\item \textbf{AVX2 $=$ FMA reference, bit for bit} (\code{conv\_avx2\_is\_bit\_identical\_to\_the\_fma\_reference}): the compared quantity is the output byte of every pixel for random kernels with positive and negative weights, many sizes, strides and thread counts. The reference is written independently with \code{fmaf} in the same order.
+\item \textbf{scalar $=$ autovec $=$ row-accumulate rewrite, bit for bit}: same operations, same order, no FMA.
+\item \textbf{Float32 versus exact arithmetic}: an implementation can differ from the exact result (computed in double precision, ties to even) only when the exact value lies so close to a rounding boundary ($x.5$) that the float rounding error moves it across. The test \code{conv\_scalar\_differs\_from\_exact\_rounding\_only\_next\_to\_ties} checks that every such difference occurs within the proven error bound of a tie, and never exceeds one grey level. The independent NumPy/SciPy cross-check (float64, Chapter~\ref{ch:testing}) measured \crossApproxPct\,\% of pixels differing by one grey level for box and Gaussian kernels over all three implementations, never by more. The FMA family and the two-rounding family can therefore differ from each other by one level on such near-ties; they cannot differ otherwise.
+\item \textbf{Exact kernels, zero tolerance} (\code{conv\_binomial\_kernels\_are\_exact\_in\_every\_implementation}): for binomial kernels up to $9\times9$ the 2D weights are integer multiples of $2^{-16}$ at most, every product has fewer than 24 significant bits and every partial sum is a multiple of $2^{-16}$ below $2^{8}$, i.e.\ it needs at most $8+16=24$ bits. Nothing is ever rounded, the order does not matter, and \emph{all} implementations including the FMA family must agree exactly. This is the test that proves the data movement (shuffles, lane order, border logic) is right independently of any rounding argument.
+\end{enumerate}
+
+\section{An error bound that is tested, not just stated}
+
+For a sum of $n=k^2$ terms in float arithmetic with FMA, the standard result is
+\[
+\bigl|\hat s-s\bigr|\;\le\;\gamma_n\sum|w_{ji}p_{ji}|\;\le\;\gamma_n\cdot255\sum|w_{ji}|,\qquad
+\gamma_n=\frac{nu}{1-nu}.
+\]
+The test \code{conv\_float\_error\_is\_within\_the\_theoretical\_bound} computes the same sum in double precision (\code{reference::convolveDouble}, same order) and compares: the largest observed error was \errBoundRatio\ times the bound. In other words the bound holds with an order of magnitude to spare, as expected: it describes the worst case in which all rounding errors have the same sign and the largest size, which real data never does. In practice this means a float32 result has an error far below $\tfrac12$ grey level, and a mismatch in the output byte can occur only where the exact value is within about $10^{-4}$ of a rounding boundary.
+
+\section{Rounding and clamping details that cause real bugs}
+
+\begin{itemize}
+\item \textbf{Round-half-even versus half-up.} The scalar code uses \code{lrintf}, the AVX2 code \code{cvtps\_epi32}; both use the processor's rounding mode (default: nearest-even). A kernel that rounds ``half up'' differs on every exact tie, so ties are not a theoretical curiosity: any kernel with power-of-two weights, such as the binomial filters, produces exact $x.5$ sums on integer pixels all the time. The mutation \emph{``truncate instead of round''} is killed by the tests.
+\item \textbf{Clamp after rounding, not before.} A value of 255.4 must give 255, not 256 clamped later by wrap-around. The AVX2 path uses saturating packs (\code{packs\_epi32}, \code{packus\_epi16}), which clamp to $[-32768,32767]$ and then $[0,255]$. This is only correct if the 32-bit integer is itself correct, which needs the next point.
+\item \textbf{Overflow in the float-to-int conversion.} \code{cvtps\_epi32} returns the ``integer indefinite'' value $-2^{31}$ for inputs outside the 32-bit range, which would turn a huge positive sum into the minimum and clamp it to 0, silently. \code{Kernel::validate} therefore rejects kernels where $255\sum|w|>10^9$ and any kernel containing NaN or infinity; the test \code{bad\_arguments\_are\_rejected} covers it.
+\item \textbf{Negative weights.} Sharpening and emboss kernels produce negative sums; those clamp to 0. The test kernels include random weights in $[-1,1]$ so both clamp directions are exercised.
+\item \textbf{The sum of the weights.} A blur must have $\sum w=1$ to preserve brightness; the Gaussian factory normalises in double and stores float. The test \code{conv\_blur\_of\_constant\_image\_is\_constant\_and\_brightness\_is\_kept} checks that a constant image stays constant.
+\end{itemize}
+
+\section{OpenCV and the 14-bit gray conversion}
+
+OpenCV's \code{cvtColor} computes gray with 14-bit coefficients ($0.299,0.587,0.114$ scaled by $2^{14}$), the library with 8-bit coefficients ($77,150,29$ over 256). The results differ by up to 1 grey level on a minority of pixels (7.43\,\% on the test image). This is a \emph{design difference}, not a bug of either library, and Chapter~\ref{ch:bench} reports the comparison with that caveat. If an interviewer asks, the right statement is: ``8-bit coefficients keep the intermediate in 16 bits, so one 256-bit register processes 16 pixels; the price is a coefficient error of about $0.2\%$, and the output differs from the 14-bit conversion by at most one grey level.''
+
+\begin{sound}
+``For gray and Sobel the result is integer, so all implementations are bit-identical, and I checked the gray conversion for all 16.7 million colours. For convolution I fixed the accumulation order and compiled the scalar path with FMA contraction off. The AVX2 result equals an independent \code{fmaf} reference bit for bit; against a float64 SciPy reference a one-level difference occurs only on near-ties, in about seven of a million pixels for box and Gaussian kernels, and binomial kernels, which are exact in float, agree with zero tolerance. The float error stays below a tenth of the theoretical bound.''
+\end{sound}

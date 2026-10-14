@@ -1,0 +1,81 @@
+\chapter{SIMD from zero: AVX2 in one chapter}\label{ch:simd}
+
+\section{The idea}
+
+\textbf{SIMD} means \emph{Single Instruction, Multiple Data}: one instruction operates on several numbers at once. Think of a checkout with one cashier scanning one item at a time (scalar) versus a conveyor that lets the cashier stamp 8 or 32 identical items with one press (SIMD).
+
+Inside the CPU there are special wide registers. In \textbf{AVX2} they are \textbf{256 bits = 32 bytes} wide (named \code{ymm0}--\code{ymm15}). What is in the register is up to the instruction:
+
+\begin{center}
+\begin{tikzpicture}[x=0.21cm,y=0.62cm,font=\tiny]
+\draw[fill=plainbg] (0,0) rectangle (32,0.8);
+\foreach \i in {0,...,31} {\draw (\i,0) -- (\i,0.8); }
+\node[anchor=east,font=\scriptsize] at (-0.3,0.4) {32 $\times$ uint8};
+\begin{scope}[yshift=-1.1cm]
+\draw[fill=soundbg] (0,0) rectangle (32,0.8);
+\foreach \i in {0,2,...,30} {\draw (\i,0) -- (\i,0.8); }
+\node[anchor=east,font=\scriptsize] at (-0.3,0.4) {16 $\times$ int16};
+\end{scope}
+\begin{scope}[yshift=-2.2cm]
+\draw[fill=warnbg] (0,0) rectangle (32,0.8);
+\foreach \i in {0,4,...,28} {\draw (\i,0) -- (\i,0.8); }
+\node[anchor=east,font=\scriptsize] at (-0.3,0.4) {8 $\times$ float32 / int32};
+\end{scope}
+\draw[dashed,thick,accent] (16,-2.4) -- (16,1.0);
+\node[font=\scriptsize,accent] at (8,1.3) {lane 0 (128 bit)};
+\node[font=\scriptsize,accent] at (24,1.3) {lane 1 (128 bit)};
+\end{tikzpicture}
+\end{center}
+The same 256 bits can be read as 32 bytes, 16 half-words, or 8 floats. One \code{vaddps} adds 8 pairs of floats; one \code{vpaddw} adds 16 pairs of 16-bit integers. Peak throughput therefore goes up by 8 to 32 times for the same number of instructions, \emph{if} the data is arranged so that the lanes do useful, independent work.
+
+\section{Reading an intrinsic's name}
+
+You write SIMD code in C++ with \textbf{intrinsics}: functions (declared in \code{<immintrin.h>}) that the compiler turns into one machine instruction each. The names follow a pattern:
+\[
+\texttt{\_mm256\_add\_epi16}\;=\;\underbrace{\texttt{\_mm256}}_{\text{256-bit register}}\;\underbrace{\texttt{add}}_{\text{operation}}\;\underbrace{\texttt{epi16}}_{\text{16-bit signed int elements}}
+\]
+Type suffixes: \code{epi8/16/32/64} signed integers, \code{epu8/16} unsigned, \code{ps} packed single-precision floats, \code{si256} ``whole register, no element meaning''. \code{\_mm\_} (no number) means 128-bit. The C++ types are \code{\_\_m256} (8 floats), \code{\_\_m256i} (integers of any width), \code{\_\_m128i}.
+
+\section{Every instruction this project uses}
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{5.2cm}p{9.4cm}@{}}
+\toprule
+\textbf{intrinsic} & \textbf{what it does}\\ \midrule
+\code{\_mm\_loadu\_si128} / \code{\_mm\_storeu\_si128} & load / store 16 bytes from / to \emph{any} address (``u'' = unaligned allowed).\\
+\code{\_mm256\_loadu\_ps}, \code{\_mm256\_storeu\_si256} & the same for 8 floats / 32 bytes.\\
+\code{\_mm\_shuffle\_epi8} (\code{pshufb}) & for each output byte, pick the input byte named by an index (inside one 128-bit register); an index with the top bit set writes 0. The deinterleaving tool of Chapter~\ref{ch:gray}.\\
+\code{\_mm256\_cvtepu8\_epi16} & \emph{widen}: 16 bytes $\to$ 16 unsigned 16-bit numbers (zero-extend). \code{cvtepu8\_epi32}: 8 bytes $\to$ 8 int32.\\
+\code{\_mm256\_add/sub/mullo\_epi16} & 16 additions / subtractions / low 16 bits of products, at once.\\
+\code{\_mm256\_abs\_epi16}, \code{\_mm256\_srli\_epi16} & absolute value; logical shift right of each 16-bit element.\\
+\code{\_mm256\_packus\_epi16} & \emph{narrow with saturation}: two registers of int16 $\to$ one of uint8, clamping each value into $[0,255]$.\\
+\code{\_mm256\_packs\_epi32} & narrow int32 $\to$ int16 with signed saturation.\\
+\code{\_mm256\_permute4x64\_epi64}, \code{\_mm256\_permutevar8x32\_epi32} & move 64-bit or 32-bit pieces \emph{across} the two 128-bit halves (needed after the packs, see below).\\
+\code{\_mm256\_cvtepi32\_ps} / \code{\_mm256\_cvtps\_epi32} & int32 $\leftrightarrow$ float32; the float $\to$ int conversion rounds to nearest even.\\
+\code{\_mm256\_broadcast\_ss} & copy one float into all 8 lanes (used for the filter weight).\\
+\code{\_mm256\_fmadd\_ps}$(a,b,c)$ & $a\cdot b+c$ for 8 floats, with a \emph{single} rounding (fused multiply-add, from the FMA3 extension).\\ \bottomrule
+\end{tabular}
+\end{center}
+
+\section{Two things that trip everyone up}
+
+\subsection{Lanes: the 256-bit register is really two 128-bit halves}
+
+Most AVX2 integer instructions work inside each 128-bit half separately. \code{packus}, for example, packs the \emph{low half of both inputs} into the low half of the output and the high halves into the high half, so the output order is scrambled relative to the input order. A \emph{permute} afterwards puts the pixels back in order. Chapters~\ref{ch:sobel} and \ref{ch:conv} show the exact pictures; the unit tests catch any slip because the result would be garbled.
+
+\subsection{Tails: the image width is rarely a multiple of the vector width}
+
+A loop that handles 16 pixels per step ends with 0--15 pixels left. Options: pad the image (needs control over the input), a masked store, or handle the remainder with scalar code. We use scalar code for gray/Sobel remainders and a small temporary buffer for convolution. The tests use widths $1,2,3,\dots,15,16,17,\dots,129$ \emph{because} every width class near 16, 32 and 64 has a different tail length.
+
+\section{Compiling and calling it safely}
+
+\begin{itemize}
+\item AVX2 and FMA instructions only exist on CPUs from about 2013/2014 on. Compiling a file with \code{-mavx2 -mfma} lets the compiler emit them \emph{anywhere} in that file. We therefore compile \textbf{only} \file{avx2.cpp} with those flags, and call into it \textbf{only after} a run-time CPU check (\code{\_\_builtin\_cpu\_supports("avx2")}) in \file{dispatch.cpp}. The rest of the library runs on any x86-64 CPU.
+\item A global object with a constructor in \file{avx2.cpp} would execute at program start, before any check, and could crash an old CPU. The shuffle masks are therefore \code{constexpr} tables, computed by the compiler.
+\item Alternative: compile everything with \code{-march=native}. Simpler and often slightly faster, but the binary may crash with ``illegal instruction'' on a different CPU model. On a cluster with several node types that is a real risk, so the Slurm scripts build per node type.
+\end{itemize}
+
+\begin{sound}
+``AVX2 gives 256-bit registers: 32 bytes, 16 words or 8 floats. I compile only the intrinsics file with \code{-mavx2 -mfma} and gate it with a run-time CPU check. The two details I had to design around were the 128-bit lane structure (packs scramble the order, so I permute afterwards) and tails (scalar remainder, or a temporary buffer so nothing is ever written past the row).''
+\end{sound}

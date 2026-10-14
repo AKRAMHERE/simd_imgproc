@@ -1,0 +1,70 @@
+\chapter{The resume bullets, one by one}\label{ch:resume}
+
+\begin{warn}[Wording]
+The bullets below are paraphrased from the project description (``optimized grayscale conversion, Sobel edge detection and 2D convolution; scalar, OpenMP and AVX2 implementations; vectorized operations and cache-aware memory access; benchmarks of runtime, throughput and speedup across resolutions and kernel sizes; automated correctness tests against a scalar reference''). Replace the quoted lines with your exact resume text; the explanations stay valid. Anything in square brackets is a number you must take from your own cluster runs.
+\end{warn}
+
+For each bullet: what it means in plain words, how it was done, where to find it, what evidence exists, and the follow-up question to expect.
+
+\section{Bullet 1: three operations, three implementations}
+\textit{``Implemented grayscale conversion, Sobel edge detection and 2D convolution in C++ with scalar, OpenMP-parallel and AVX2-vectorized versions.''}
+
+\begin{description}[leftmargin=2.2cm,style=nextline]
+\item[What] Three image operations, each in three implementation styles (scalar, compiler-vectorized, hand-written AVX2), each runnable on 1 to $n$ OpenMP threads: $3\times3\times$ threads, all producing the same pixels.
+\item[How] One scalar source compiled two ways; AVX2 intrinsics in one translation unit with run-time CPU check; row-band parallelism with \code{omp parallel} over contiguous bands (Chapters~\ref{ch:scalar}--\ref{ch:conv}).
+\item[Where] \file{src/scalar\_impl.inc}, \file{src/avx2.cpp}, \file{src/dispatch.cpp}.
+\item[Evidence] \testGroups\ test groups; AVX2 results equal an independent \code{fmaf} reference bit for bit; gray verified on all $2^{24}$ colours.
+\item[Expect] ``Walk me through the AVX2 grayscale.'' (3 loads of 16 bytes, 9 \code{pshufb} to deinterleave R, G, B, widen to 16 bits, multiply by 77/150/29, add 128, shift right 8, pack; Chapter~\ref{ch:gray}.) ``Why not float for gray?'' (Integer keeps 16 pixels per register and exactness; 8-bit coefficients cost 0.2\,\% coefficient error.)
+\end{description}
+
+\section{Bullet 2: vectorization and cache-aware access}
+\textit{``Optimized for cache and SIMD: vectorized arithmetic, aligned rows, a ring of converted rows for convolution, register blocking with independent accumulators.''}
+
+\begin{description}[leftmargin=2.2cm,style=nextline]
+\item[What] The arithmetic is data-parallel across pixels, and the data re-used by neighbouring outputs is kept in cache or registers.
+\item[How] 64-byte-aligned rows; stride that avoids exact multiples of 4096 bytes; convolution converts each source row to float \emph{once} into a ring of $k$ padded rows (the working set is $4k(w+2r)$ bytes, in L2); eight independent accumulators to hide FMA latency; one broadcast weight per tap.
+\item[Where] \code{convolveRowsImpl$<$8$>$} in \file{src/avx2.cpp}; Chapters~\ref{ch:conv} and~\ref{ch:cache}.
+\item[Evidence] Ablations on the convolution (Chapter~\ref{ch:bench}): 8 accumulators are \ratioAccFourNine$\times$ faster than 4 at $k=9$; converting per tap costs \ratioPerTapNine$\times$; the compiler-friendly rewrite reaches only about 1/\ratioRowAccToAvx\ of the hand-written kernel's rate. Stride experiment: effect within noise on the sandbox.
+\item[Expect] ``Does the stride padding actually help?'' (Say what you measured: on the VM, within noise; the theoretical failure mode is real, and you repeat the test on the cluster.) ``How close to peak?'' (About \fracOfNominalPeak\,\% of the nominal FMA peak on the sandbox core; give your cluster figure.)
+\end{description}
+
+\section{Bullet 3: benchmarking across resolutions and kernel sizes}
+\textit{``Benchmarked runtime, throughput and speedup across image resolutions and kernel sizes.''}
+
+\begin{description}[leftmargin=2.2cm,style=nextline]
+\item[What] A harness with warm-up, calibrated iteration counts, median of repetitions, CSV output, and a memory-bandwidth yardstick.
+\item[How] \file{apps/simdip\_bench.cpp}; experiments E1--E7 (Chapter~\ref{ch:running}); Slurm jobs for two CPU types; figures from \file{python/make\_figures.py}.
+\item[Where] Chapters~\ref{ch:bench} and~\ref{ch:cluster}.
+\item[Key numbers to prepare (yours)] AVX2 over scalar, single core: gray [\,\,], Sobel [\,\,], convolution $3\times3$ [\,\,] and $9\times9$ [\,\,], on \code{cpu\_il} and on \code{cpu}; OpenMP scaling to [\,\,] threads and the thread count at which gray and Sobel stop scaling; memcpy bandwidth.
+\item[Expect] ``Why does gray stop scaling before convolution does?'' (Memory bound versus compute bound; show the roofline argument and the memcpy scaling curve.) ``How reproducible are your numbers?'' (State the spread you measured, Chapter~\ref{ch:bench}.)
+\end{description}
+
+\section{Bullet 4: correctness testing}
+\textit{``Developed automated correctness tests comparing all implementations against a scalar reference.''}
+
+\begin{description}[leftmargin=2.2cm,style=nextline]
+\item[What] A layered test suite whose job is to catch the bugs specific to SIMD code.
+\item[How] Edge-size matrix around vector widths, padded and unpadded images, 1 to 200 threads, bit-exact comparisons, exhaustive gray, property tests, AddressSanitizer, an independent NumPy/SciPy cross-check, and a mutation test of the suite itself (\mutKilled\ of \mutTotal\ seeded bugs caught; Chapter~\ref{ch:testing}).
+\item[Evidence] \testChecks\ checks, \testFailures\ failures; \crossComparisons\ cross-check comparisons, \crossMismatches\ mismatches.
+\item[Expect] ``What bug did the tests find?'' (The over-read in the vector loop that the scalar tail masked; found by the mutation test because the allocator hid it.) ``How do you test floating-point code?'' (Fixed accumulation order, an FMA reference for bit-exactness, exact kernels for zero tolerance, a proven error bound for the rest.)
+\end{description}
+
+\section{Bullet 5: Python tooling}
+\textit{``Python for reference implementation, cross-validation, experiment automation and plotting.''}
+
+\begin{description}[leftmargin=2.2cm,style=nextline]
+\item[What] An independent implementation of the specification, tools that drive the C++ binaries, and the figure generator.
+\item[Where] \file{python/ref\_numpy.py}, \file{crosscheck.py}, \file{compare\_opencv.py}, \file{run\_experiments.py}, \file{make\_figures.py}.
+\item[Expect] ``Why a second implementation in Python?'' (It shares no code and no misunderstanding with the C++ reference; it catches specification errors that self-consistency cannot.)
+\end{description}
+
+\section{Wording to consider once your cluster numbers exist}
+
+Candidate bullets that survive a skeptical read, each fact checkable in the project:
+\begin{itemize}
+\item \textit{Built a C++17 image-processing library (RGB-to-gray, Sobel, $k\times k$ convolution) with scalar, auto-vectorized and hand-written AVX2 paths plus OpenMP row-band parallelism; AVX2 output is bit-identical to an independent FMA reference and gray is verified on all $2^{24}$ inputs.}
+\item \textit{Designed an AVX2 convolution around a ring of float-converted rows (L2-resident), eight independent FMA accumulators and run-time CPU dispatch; reached [X]\,\% of single-core FMA peak and [Y]$\times$ over scalar on bwUniCluster (Xeon 8358), [Z]$\times$ on EPYC 9454.}
+\item \textit{Quantified optimization choices with ablations (accumulator count, convert-once, compiler rewrite) and a roofline analysis using a measured memcpy yardstick; gray/Sobel saturate memory bandwidth at [N] threads, convolution scales to [M].}
+\item \textit{Verified with \testChecks{} checks, AddressSanitizer, a NumPy/SciPy cross-check and mutation testing (\mutKilled/\mutTotal{} seeded bugs detected).}
+\end{itemize}
+Remove any bracketed claim you did not measure. Do not write ``faster than OpenCV'' (Chapter~\ref{ch:bench}), do not write a speedup that is not from your cluster run, and do not write ``cache-optimized'' unless you can describe, in one sentence, what is in which cache.

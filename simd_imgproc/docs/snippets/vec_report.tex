@@ -1,0 +1,7 @@
+\begin{center}\small\begin{tabular}{@{}p{5.6cm}p{3.2cm}p{3.2cm}p{3.6cm}@{}}\toprule
+\textbf{loop} & \textbf{source line} & \textbf{vectorized by GCC?} & \textbf{reason if not}\\ \midrule
+gray: loop over $x$ (3 interleaved channels) & scalar\_impl.inc:40 & no & failed \\
+Sobel: interior loop over $x$ & scalar\_impl.inc:59 & \textbf{yes} (16-byte vectors) &  \\
+convolution: loop over $x$ with the $k^2$ taps inside & scalar\_impl.inc:71 & no & loop nest containing two or more consecutive inner loops cannot be vec \\
+convolution row-accumulate rewrite: \code{a[x] += wv * s[x]} & scalar\_autovec.cpp:38 & \textbf{yes} (16-byte vectors) &  \\
+\bottomrule\end{tabular}\end{center}

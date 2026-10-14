@@ -1,0 +1,68 @@
+\chapter{Drills and an eight-day plan}\label{ch:drills}
+
+Reading is not enough for an interview: you have to produce explanations and small pieces of code on demand. These drills are ordered from easy to hard; do them on paper or at a whiteboard, \emph{then} check against the guide.
+
+\section{Drills with short answers}
+
+\begin{enumerate}[leftmargin=*,itemsep=6pt]
+\item \textbf{Bound check.} Show that $77R+150G+29B+128$ fits in 16 unsigned bits. \emph{Answer:} $77+150+29=256$, so the maximum is $255\cdot256+128=65\,408<65\,536$.
+\item \textbf{Why 77, 150, 29?} \emph{Answer:} $0.299\cdot256=76.5$, $0.587\cdot256=150.3$, $0.114\cdot256=29.2$; rounded so the sum is exactly 256, so white stays 255.
+\item \textbf{Sobel bound.} What are the largest possible $|G_x|$ and $|G_x|+|G_y|$, and which integer type do they need? \emph{Answer:} $1020$ and $2040$; signed 16-bit.
+\item \textbf{Mask.} Output byte $i$ of the red channel for 16 pixels comes from byte $3i$ of the 48-byte block. Which input register and index does output byte 6 use? \emph{Answer:} byte 18: register $\lfloor18/16\rfloor=1$, index $18\bmod16=2$.
+\item \textbf{Throughput arithmetic.} A $4096\times4096$ gray image is converted in 5.0 ms. Pixels per second? Bytes per second counting 3 in and 1 out? \emph{Answer:} $16.8\cdot10^6/5.0\cdot10^{-3}\approx3.4\cdot10^9$ px/s; $\times4\approx13.4$ GB/s. (Recompute with your own time; compare with your memcpy yardstick.)
+\item \textbf{Working set.} Convolution $k=11$, $w=8192$: size of the ring? \emph{Answer:} $4\cdot11\cdot(8192+10)\approx361$ KB: does not fit a 48 KB L1, fits a 1--2 MB L2 \emph{(check the L2 size of your partition)}.
+\item \textbf{FMA peak.} A core has two 256-bit FMA units at 2.5\,GHz. Peak single-precision GFLOP/s? \emph{Answer:} $2\cdot8\cdot2\cdot2.5=80$.
+\item \textbf{Arithmetic intensity.} $I$ of a $5\times5$ convolution in flop per byte of minimum traffic? \emph{Answer:} $2\cdot25$ flop per 2 bytes $=25$ flop/byte.
+\item \textbf{Amdahl.} 5\,\% serial, 16 threads: maximum speedup? \emph{Answer:} $1/(0.05+0.95/16)=9.1$.
+\item \textbf{Ties.} What is \code{rne(2.5)}, \code{rne(3.5)}, \code{rne(-0.5)}? \emph{Answer:} $2$, $4$, $-0$ (then clamped to 0).
+\item \textbf{FMA versus two roundings.} Why can \code{fma(a,b,c)} differ from \code{a*b+c}? \emph{Answer:} the product is exact inside FMA before the single rounding of the sum; otherwise the product is rounded first.
+\item \textbf{Speedup arithmetic.} Scalar 100 ms, AVX2 5 ms, 8 threads of AVX2 1 ms. Speedups and parallel efficiency? \emph{Answer:} 20$\times$, 100$\times$; the thread scaling is $5/1=5\times$ on 8 threads, efficiency $62\,\%$.
+\end{enumerate}
+
+\section{Code-reading drills}
+
+Open \file{src/avx2.cpp} and, without running anything, answer:
+\begin{enumerate}[leftmargin=*,itemsep=4pt]
+\item In the Sobel loop, why does the vector loop condition have to be \code{x + 16 <= w - 1}? What would break with \code{x + 16 <= w}, and which test would find it?
+\item In the convolution, why is the ring indexed by \emph{source row number}? What happens at the top border?
+\item Which instruction fixes the lane order after \code{packus} in gray, which after \code{packs/packus} in the convolution, and why are they different?
+\item What would change if the kernel weights were \code{double}?
+\item Delete the \code{Kernel::validate} call. Name one input that now produces a wrong image without any error.
+\end{enumerate}
+
+\section{Whiteboard exercises}
+
+\begin{enumerate}[leftmargin=*,itemsep=6pt]
+\item \textbf{Brighten.} Write an AVX2 loop that adds a constant to every byte of an image row with saturation (\code{\_mm256\_adds\_epu8}), including the tail. State the tail strategy and the unaligned-load choice.
+\item \textbf{Threshold.} 8-bit threshold: \code{out = in > t ? 255 : 0}. (Hint: there is no unsigned compare for bytes; use \code{max\_epu8} and \code{cmpeq}, or bias by 128 and use the signed compare.)
+\item \textbf{Horizontal sum of a vector.} Reduce 8 floats to one with the fewest instructions. State why a reduction is slower than elementwise work and why the convolution avoids it.
+\item \textbf{Roofline sketch.} Draw the roofline of your sandbox or cluster core (peak flop/s and bandwidth from the memcpy yardstick) and place gray, Sobel and $k=3,9$ convolution on it. Say what changes if you use a second socket.
+\item \textbf{GPU mapping.} Sketch the tile-with-halo shared-memory design for a $k\times k$ convolution. State the size of the shared tile for a $32\times8$ thread block and $k=5$ producing one pixel per thread: $(32+4)\times(8+4)$ bytes.
+\end{enumerate}
+
+\section{Eight-day plan}
+
+Today is Wednesday 7 October 2026 and the exploratory interview is on Thursday 15 October at 11:00 CEST, so there are eight preparation days. Confirm the time slot and the interview format (video tool, who attends, whether a screen share or coding exercise is expected) by email now. If the other project guides share the same week, give this project the slots below and treat the cluster jobs as the long pole.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+day & tasks\\
+\midrule
+Wed 7 & Unpack, \code{make test} locally if you have an x86 machine; read Chapters 1--3. Log in to the cluster and run \file{01\_build\_test.sbatch}. Submit the benchmark jobs as soon as the tests pass, because queue time is not under your control.\\
+Thu 8 & Chapters 4--6 and the gray chapter (7); explain the gray kernel aloud without notes. Check the first cluster results; fix anything that failed (the job logs show it).\\
+Fri 9 & Sobel and convolution chapters (8, 9). Drill 1--6. Submit repeat runs of the benchmark jobs for the repeatability comparison, and \code{--exclusive} for the scaling job.\\
+Sat 10 & Cache chapter (10), numerics (11). Generate your cluster figures with \file{make\_figures.py --out}; fill in the bracketed numbers of Chapter~\ref{ch:resume}.\\
+Sun 11 & Testing (12) and benchmarks (13); explain the mutation story and the ablation story aloud in two minutes each. Whiteboard exercises 1--3.\\
+Mon 12 & Interview Q\&A (17), aloud, with a timer; record yourself once. Resume bullets: finalize against your measured numbers.\\
+Tue 13 & Whiteboard exercises 4--5 and the GPU-mapping questions; read the job description again and write three questions to ask. Mock interview with a friend or a recording: 30 minutes.\\
+Wed 14 & Light review only: one page of numbers (yours), the five soundbites, the limits (Chapter~\ref{ch:bench} caveats). Check audio, camera, network, and a plain note of the \emph{allowed} materials.\\
+Thu 15 & Interview 11:00 CEST.\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{warn}[Interview rules]
+Use only what the interview invitation allows. Outside tools during the call, including AI assistants, are not permitted in your case and are grounds for disqualification; prepare so that you do not need them. Keep your notes to material you may use openly, and ask the recruiter in advance what is allowed if it is unclear.
+\end{warn}

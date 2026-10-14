@@ -1,0 +1,110 @@
+\chapter{Running it yourself: build, tools, experiments}\label{ch:running}
+
+Everything in this chapter works on any Linux machine with GCC (C++17, OpenMP) and an x86-64 CPU with AVX2 and FMA; the Python scripts need Python 3 with NumPy and SciPy (OpenCV is optional). On a CPU without AVX2 the library still builds; the AVX2 paths report ``not supported'' and the tests skip them.
+
+\section{Project layout}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\file{include/simdip/} & the public API: \file{image.hpp}, \file{kernel.hpp}, \file{ops.hpp}\\
+\file{src/} & \file{scalar\_impl.inc} (the one scalar source, included twice), \file{scalar\_novec.cpp}, \file{scalar\_autovec.cpp}, \file{avx2.cpp}, \file{dispatch.cpp} (validation, OpenMP bands, impl choice), \file{reference.cpp}, \file{image.cpp}, \file{kernel.cpp}\\
+\file{apps/} & \file{simdip\_cli.cpp} (command line tool), \file{simdip\_bench.cpp} (benchmark harness)\\
+\file{tests/} & \file{test\_main.cpp}: 24 test groups, no framework needed\\
+\file{python/} & independent NumPy reference, cross-check, OpenCV comparison, experiment runner, figure generator\\
+\file{scripts/} & \file{mutation\_test.sh}\\
+\file{slurm/} & job scripts for bwUniCluster\\
+\file{results/} & saved sandbox example results, logs of tests, cross-check and mutation runs\\
+\file{docs/} & the \LaTeX\ sources of this guide\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Build and test}
+
+\begin{lstlisting}[style=shell]
+make -j4                  # library, CLI, benchmark, tests -> build/
+make test                 # 24 groups; the last line must read "... 0 failures"
+make asan-test            # same tests with AddressSanitizer + UBSan (build_asan/)
+make vec-report           # what GCC auto-vectorized -> build/vec_report_full.txt
+make OPT="-O3 -march=native" BUILD=build_native    # let the compiler use the whole CPU (autovec only)
+make OPENMP=0             # no OpenMP; the threads argument is ignored
+\end{lstlisting}
+
+The per-file compiler flags are in the Makefile and are part of the design (Chapter~\ref{ch:scalar}): \code{scalar\_novec.cpp} with the vectorizer off, \code{scalar\_autovec.cpp} with it on, both with \code{-ffp-contract=off}, and \code{avx2.cpp} with \code{-mavx2 -mfma}. A program that links the library calls AVX2 code only after the run-time CPU check \code{avx2Supported()}.
+
+\section{The command-line tool}
+
+\begin{lstlisting}[style=shell]
+./build/simdip info                                   # CPU features, threads
+python3 python/make_test_images.py                    # writes data/*.pgm, data/*.ppm
+./build/simdip gray  data/astronaut.ppm  out_gray.pgm --impl avx2 --threads 2
+./build/simdip sobel data/camera.pgm     out_sobel.pgm --impl avx2
+./build/simdip conv  data/camera.pgm     out_blur.pgm --kernel gauss --size 9 --sigma 2.5 --impl avx2
+./build/simdip conv  data/camera.pgm     out_sharp.pgm --kernel sharpen --impl scalar
+\end{lstlisting}
+Images are read and written as PNM (PGM for gray, PPM for colour). View them with any image viewer that supports PNM, or convert them with OpenCV or Pillow (for example \code{cv2.imwrite} on the result of \code{cv2.imread}). Running the same command with \code{--impl scalar} and \code{--impl avx2} and comparing the files with \code{cmp} is the quickest sanity check: for gray and Sobel they must be identical.
+
+\section{The benchmark tool}
+
+\begin{lstlisting}[style=shell]
+./build/simdip_bench --op gray,sobel,conv --impl scalar,autovec,avx2 \
+    --sizes 512,1024,2048 --ksizes 3,5,9 --threads 1,2 --reps 9 --csv out.csv --label try1
+./build/simdip_bench --op conv --impl avx2 --ablation --sizes 1024 --ksizes 3,9,31 --csv abl.csv
+./build/simdip_bench --op copy --sizes 4096 --threads 1,2       # memory-bandwidth yardstick
+./build/simdip_bench --op sobel,conv --sizes 4096 --stride 4160 --ksizes 9   # explicit row stride
+\end{lstlisting}
+Options: \code{--op} (gray, sobel, conv, copy), \code{--impl}, \code{--sizes} (image side in pixels), \code{--ksizes}, \code{--threads}, \code{--reps}, \code{--min-ms}, \code{--stride} (bytes), \code{--aspect N} (height $=$ width$/N$, for non-square images), \code{--ablation}, \code{--csv}, \code{--label}. The CSV has one row per measurement with the columns \code{label, op, impl, threads, width, height, stride, ksize, iters, reps, median\_ms, min\_ms, max\_ms, mpix\_s, gb\_s, gflops}. Build with \code{-O0} and the program prints a warning that the timings are meaningless.
+
+\section{Python scripts}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+\file{make\_test\_images.py} & generates the test pictures (a photograph, colour images, noise, a checkerboard) into \file{data/}\\
+\file{ref\_numpy.py} & the independent reference implementation (NumPy + SciPy)\\
+\file{crosscheck.py} & runs the CLI for all implementations and thread counts, compares with the reference; prints the number of comparisons and mismatches\\
+\file{compare\_opencv.py} & agreement and speed comparison against OpenCV (needs \code{cv2}); \code{--bench-csv}, \code{--size}, \code{--out}\\
+\file{run\_experiments.py} & reruns the experiments E1--E5 into \file{results/}\\
+\file{make\_figures.py} & produces every figure, table and number macro used in this PDF from the CSV files\\
+\file{extract\_code.py} & cuts the code listings of this guide out of the source files (so listings cannot drift from the code)\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Experiments}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}llX@{}}
+\toprule
+id & file & question\\
+\midrule
+E1 & \file{E1\_main.csv} & every op $\times$ implementation $\times$ size $\times$ kernel, 1 and 2 threads\\
+E2 & \file{E2\_sizes.csv} & throughput versus image size (cache effects)\\
+E3 & \file{E3\_stride\_*.csv} & row stride equal to a page multiple versus padded by 64 bytes\\
+E4 & \file{E4\_ksize.csv} & convolution versus kernel size, with the three ablations\\
+E5 & \file{E5\_copy.csv} & the memory-bandwidth yardstick (\code{memcpy})\\
+E6 & \file{E6\_repeat\_*.csv} & the same measurement three times: repeatability\\
+E7 & \file{E7\_scaling.csv} & (cluster) OpenMP scaling 1 to 32 threads; not available in the sandbox (2 cores)\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Using the library from your own code}
+
+\begin{lstlisting}
+#include "simdip/ops.hpp"
+using namespace simdip;
+
+Image rgb = readPNM("in.ppm");                    // 3 channels
+Image gray(rgb.width(), rgb.height(), 1);         // destination: right size, 1 channel
+rgbToGray(rgb, gray, {Impl::Avx2, 4});            // AVX2, 4 OpenMP threads
+Image edges(gray.width(), gray.height(), 1);
+sobel(gray, edges, {Impl::Avx2, 4});
+Image blurred(gray.width(), gray.height(), 1);
+convolve(gray, blurred, kernels::gaussian(9, 2.5), {Impl::Avx2, 4});
+\end{lstlisting}
+The functions throw \code{std::invalid\_argument} for wrong sizes, overlapping buffers or an unusable kernel; they never read or write outside the pixels of a row.

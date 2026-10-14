@@ -1,0 +1,54 @@
+\chapter{Using all the cores: OpenMP}\label{ch:openmp}
+
+\section{The idea}
+
+A modern CPU has many cores, each able to run its own thread. Image filters are ideal for this: the output rows are independent of each other (an output pixel depends only on the \emph{input}, never on other output pixels), so rows can be computed in any order, on any core, at the same time. This kind of problem is called \emph{embarrassingly parallel} or \emph{data parallel}.
+
+\textbf{OpenMP} is a standard way to tell the compiler ``run this block on several threads''. You write a \code{\#pragma} and the compiler and runtime (on GNU/Linux: \code{libgomp}) create and manage the threads.
+
+\section{Our scheme: one contiguous band of rows per thread}
+
+\lstinputlisting{snippets/code_omp_bands.cpp}
+
+With $n$ threads the image is cut into $n$ horizontal bands of nearly equal height. Why \emph{contiguous bands} rather than letting each thread take single rows in turn (OpenMP's default \code{schedule(static,1)}-like interleaving)?
+\begin{itemize}
+\item \textbf{Locality.} Each thread streams through one contiguous block of memory, and its prefetcher can follow it. Neighbouring rows (needed by Sobel and convolution) are already in that thread's cache.
+\item \textbf{No false sharing.} Threads write to different parts of the output; only a few cache lines at the band boundaries are shared, and only for reading the \emph{input}.
+\item \textbf{Determinism.} The same thread count always gives the same split. And because each output pixel is computed from the input alone, using any number of threads gives \textbf{identical output}: the test \code{conv\_threads\_do\_not\_change\_the\_result} runs 1 to 200 threads and demands identical bits.
+\end{itemize}
+The price: if the work per row differs a lot, equal bands are unequal work (\emph{load imbalance}). For these kernels every row costs the same, so static bands are ideal; for irregular work you would use \code{schedule(dynamic)}.
+
+\begin{plain}
+\textbf{Edge cases handled on purpose.} If the number of threads exceeds the number of rows (the test uses 200 threads on 97 rows) some threads receive an empty band and simply do nothing. With \code{threads = 1} (or an image with a single row) no OpenMP region is started at all: the function is called directly, so the single-thread benchmarks contain no threading overhead. If the library is built without OpenMP (\code{make OPENMP=0}) the \code{threads} argument is ignored.
+\end{plain}
+
+\section{What limits the speedup?}
+
+\begin{itemize}
+\item \textbf{Amdahl's law.} If a fraction $s$ of the work cannot be parallelized, the speedup on $n$ threads is at most $1/(s+(1-s)/n)$. Here the serial parts are tiny (argument checks, thread start-up), so the limit is the next item.
+\item \textbf{Memory bandwidth.} All cores share the path to main memory. A kernel that does very little arithmetic per byte (gray: 3 bytes in, 1 byte out, a few operations) can saturate the memory system with only a few threads; adding more cores then adds nothing. A kernel with a lot of arithmetic per byte (convolution with large $k$) keeps scaling. Chapter~\ref{ch:cache} quantifies this with a measured bandwidth yardstick.
+\item \textbf{Thread start-up cost.} Creating or waking threads costs microseconds. For a tiny image this can exceed the work itself. (The benchmark's warm-up keeps the thread pool alive between calls.)
+\item \textbf{CPU frequency and shared caches.} Running many cores can lower the clock speed and makes cores share the last-level cache.
+\end{itemize}
+
+\section{Controlling the threads from outside}
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{4.5cm}p{10.2cm}@{}}
+\toprule
+\code{OMP\_NUM\_THREADS=8} & Default thread count if the program does not ask. Our API always passes an explicit count.\\
+\code{OMP\_PROC\_BIND=close} & Pin threads to cores and keep them adjacent; stops the operating system from moving them around between cores during a measurement.\\
+\code{OMP\_PLACES=cores} & What a ``place'' is: one physical core (avoids using both hyper-threads of one core for two threads).\\
+\code{taskset -c 0-7} / Slurm \code{--cpus-per-task} & Restrict the process to specific cores. On a Slurm node you get exactly the cores you asked for.\\ \bottomrule
+\end{tabular}
+\end{center}
+The benchmark prints \code{OMP\_PROC\_BIND} and \code{OMP\_PLACES} at the top of its output so you can see how a measurement was made. The Slurm job scripts set them (Chapter~\ref{ch:cluster}).
+
+\begin{warn}[First touch]
+On a machine with several memory controllers (NUMA, e.g.\ two-socket nodes), a memory page lives near the core that first wrote to it. If one thread initializes the whole image and then many threads process it, some threads read ``remote'' memory, which is slower. Our \code{Image} constructor zeroes the buffer on the calling thread. For a single-socket benchmark with pinned threads this is fine; for a serious multi-socket study you would initialize the buffers in parallel with the same band split. This is a known limitation, worth stating if asked.
+\end{warn}
+
+\begin{sound}
+``Each thread gets one contiguous band of output rows. Output pixels depend only on the input, so there is no synchronization and the result is bit-identical for every thread count, which my tests check from 1 to 200 threads. Scaling is limited by memory bandwidth for the low-arithmetic kernels, and I measured a copy bandwidth to show where the ceiling is.''
+\end{sound}

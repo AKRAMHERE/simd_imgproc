@@ -1,0 +1,88 @@
+\chapter{AVX2 convolution, line by line}\label{ch:conv}
+
+Convolution is where AVX2 pays off the most: lots of arithmetic per pixel ($2k^2$ floating-point operations) and a very regular pattern. There are four ideas in the kernel.
+
+\section{Idea 1: convert each row to float once, with the border built in}
+
+The arithmetic is done in float32, but the image is bytes. Converting a byte to a float for every tap (every multiplication) would waste time: a pixel is used $k^2$ times. Instead, for each source row we create \emph{one padded float copy}:
+\[
+\text{padded}[j]=\text{src}[\operatorname{clamp}(j-r,\,0,\,w-1)],\qquad j=0,\dots,\text{round}_{64}(w)+2r-1 .
+\]
+The $r$ extra entries on each side replicate the edge pixel, so the \textbf{border handling disappears from the inner loop}: every output pixel, even the first, reads $k$ consecutive floats from the padded row. Extra entries beyond the right border let the vector loop run in full blocks of 64 pixels.
+
+\lstinputlisting{snippets/code_avx2_convert_row.cpp}
+
+\section{Idea 2: a ring of $k$ float rows, each converted only once}
+
+Output row $y$ needs source rows $y-r\dots y+r$ ($k$ rows). Output row $y+1$ needs $y-r+1\dots y+r+1$: only \emph{one new row}. The code keeps $k$ padded rows in a small cache (slots); when moving to the next output row it converts just the one new source row into a free slot, and re-uses the rest. At the top and bottom of the image the clamped row indices repeat (row 0 is needed several times); the slot lookup by \emph{source row number} handles this without special cases.
+
+\begin{center}
+\begin{tikzpicture}[x=1cm,y=0.5cm,font=\scriptsize]
+\foreach \i/\t in {0/{y-2},1/{y-1},2/{y},3/{y+1},4/{y+2}} {
+  \node[draw,minimum width=3.2cm,minimum height=0.42cm,fill=plainbg] at (1.8,-\i) {};
+  \node[anchor=east] at (0.1,-\i) {src row \t};}
+\foreach \i/\t in {0/{y-1},1/{y},2/{y+1},3/{y+2}} {
+  \node[draw,minimum width=3.2cm,minimum height=0.42cm,fill=plainbg] at (7.8,-\i) {};
+  \node[anchor=east] at (6.1,-\i) {src row \t};}
+\node[draw,minimum width=3.2cm,minimum height=0.42cm,fill=warnbg] at (7.8,-4) {};
+\node[anchor=east] at (6.1,-4) {src row y+3};
+\node[font=\footnotesize,align=center] at (4.8,-5.2) {$5\times5$ kernel: moving from output row $y$ to $y+1$\\reuses 4 float rows and converts 1 new one (orange).};
+\draw[-{Stealth},thick] (3.6,-2) -- (6.0,-2);
+\end{tikzpicture}
+\end{center}
+
+Working set: $k$ rows of $(w+2r)$ floats. For $w=4096$ and $k=9$ that is $9\cdot4104\cdot4$ bytes $\approx 148$\,KB, which fits in the L2 cache of the CPUs we use (Chapter~\ref{ch:cache}). This is the \textbf{cache-aware} part of the design: the image is streamed once from memory, and everything that is re-used lives in the cache.
+
+\section{Idea 3: eight accumulators in registers, one broadcast weight}
+
+For a block of 64 adjacent output pixels (8 vectors of 8 floats) the kernel keeps \textbf{8 accumulators in registers}, loops over the $k^2$ taps, and for each tap does
+\[
+\text{acc}_v \mathrel{+}= w_{ji}\cdot \text{padded}_j[x+i+8v],\qquad v=0,\dots,7,
+\]
+using \code{broadcast\_ss} to copy the weight into all lanes and \code{fmadd\_ps} to multiply-add. The loads at offset $+i$ are, again, plain unaligned loads of the same row shifted by one float.
+
+Why 8 accumulators? An FMA has a \emph{latency} of about 4 cycles (the result is not ready for 4 cycles) but a modern core can \emph{start} two per cycle. If each FMA depends on the previous one (a single accumulator), the core waits 4 cycles for each; with 8 independent accumulators it can keep both FMA units busy. The ablation with 4 accumulators measures the difference (Chapter~\ref{ch:bench}).
+
+\begin{plain}
+\textbf{Registers vs.\ memory.} Because the accumulators stay in registers for all $k^2$ taps, the only memory traffic in the inner loop is reading the padded rows (served by the cache). The alternative that a compiler can produce from the ``row accumulate'' loop nest, \code{acc[x] += w * row[x+i]} over a whole row, reads and writes the accumulator array in memory for \emph{every} tap. \code{ablation::convolveAutoVecRowAcc} is exactly that, and the measured gap to the register version is large.
+\end{plain}
+
+\section{Idea 4: the same order of operations as the scalar code}
+
+Every output pixel is accumulated starting from 0, with taps in the order $j=0,\dots,k-1$ (outer) and $i=0,\dots,k-1$ (inner). The vector code does the same for its 64 pixels in parallel; vectorizing across pixels changes which pixels are computed together, but never the order of operations \emph{within} one pixel. As a result:
+\begin{itemize}
+\item AVX2 is bit-identical to a scalar \code{fmaf} loop in the same order (the reference), for every kernel and image: tested.
+\item The scalar and autovec versions are bit-identical to each other (multiply, then add).
+\item Differences between the two families are possible only because one fuses the multiply-add (one rounding) and the other does not (two roundings). Chapter~\ref{ch:numerics} analyses that.
+\end{itemize}
+
+\section{Converting back to bytes}
+
+After the taps, each accumulator holds 8 float sums. \code{cvtps\_epi32} rounds them to nearest, ties to even (the CPU's default mode, the same rule as the scalar \code{lrintf}); \code{packs\_epi32} narrows int32 to int16 and \code{packus\_epi16} narrows to uint8, \emph{both with saturation}, which implements the clamp to $[0,255]$. As in the Sobel kernel the two-lane structure scrambles the order, here in units of 4 pixels; one \code{permutevar8x32} with the index vector $(0,4,1,5,2,6,3,7)$ restores it:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccccccc@{}}
+\toprule
+after \code{packus}, 32-bit group: & 0 & 1 & 2 & 3 & 4 & 5 & 6 & 7\\
+contains pixels: & 0--3 & 8--11 & 16--19 & 24--27 & 4--7 & 12--15 & 20--23 & 28--31\\ \midrule
+index vector picks group: & 0 & 4 & 1 & 5 & 2 & 6 & 3 & 7\\
+so the output contains pixels: & 0--3 & 4--7 & 8--11 & 12--15 & 16--19 & 20--23 & 24--27 & 28--31\\ \bottomrule
+\end{tabular}
+\end{center}
+
+\lstinputlisting{snippets/code_avx2_pack.cpp}
+
+\section{The complete kernel}
+
+\lstinputlisting{snippets/code_avx2_conv.cpp}
+
+\begin{plain}
+\textbf{The last block of a row.} If fewer than 64 pixels remain, the kernel still computes 64 pixels (the extra ones read replicated padding, which is defined data) but stores into a small temporary array and copies only the valid bytes (\code{memcpy(q + x, tmp, w - x)}). It never writes past the end of the row, which the padding test and the sanitizer check.
+
+\textbf{Guard on the kernel weights.} \code{cvtps\_epi32} returns the value \code{0x80000000} for numbers outside the int32 range, which would turn a huge positive sum into 0 after the pack instead of 255. \code{Kernel::validate()} therefore rejects kernels with $255\sum|w|>10^9$ and non-finite weights, so scalar and AVX2 cannot diverge on overflow.
+\end{plain}
+
+\begin{sound}
+``The AVX2 convolution converts each source row to a padded float row once, keeps $k$ of them in a small ring so the next output row reuses $k-1$ of them, and computes 64 output pixels per block with eight register accumulators and \code{fmadd}. Borders disappear because the padding is built into the row copy. Per pixel it accumulates in the same order as the scalar code, so it is bit-identical to an FMA reference; I tested that for 7 kernel sizes, widths around every block boundary, and several thread counts.''
+\end{sound}

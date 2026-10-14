@@ -1,0 +1,29 @@
+avx2+fma available: yes
+[ ok ] image_rows_are_aligned_and_stride_policy
+[ ok ] image_copy_is_deep
+[ ok ] pnm_round_trip_and_comments
+[ ok ] gray_known_values
+[ ok ] gray_exhaustive_all_16777216_colours
+[ ok ] gray_matches_reference_edge_sizes_strides_threads
+[ ok ] sobel_hand_computed_examples
+[ ok ] sobel_constant_image_is_zero
+[ ok ] sobel_matches_reference_edge_sizes_kinds_threads
+[ ok ] sobel_symmetries_hold
+[ ok ] conv_identity_returns_the_input
+[ ok ] conv_delta_kernel_shifts_the_image
+[ ok ] conv_blur_of_constant_image_is_constant_and_brightness_is_kept
+[ ok ] conv_binomial_kernels_are_exact_in_every_implementation
+[ ok ] conv_avx2_is_bit_identical_to_the_fma_reference
+[ ok ] conv_scalar_autovec_and_rowacc_are_bit_identical
+[ ok ] conv_threads_do_not_change_the_result
+      worst observed error / theoretical bound = 0.092
+[ ok ] conv_float_error_is_within_the_theoretical_bound
+      scalar vs exact rounding: 0 of 14400 pixels differ (0.0000 %)
+[ ok ] conv_scalar_differs_from_exact_rounding_only_next_to_ties
+[ ok ] kernel_factories_and_validation
+[ ok ] outputs_never_touch_the_row_padding
+[ ok ] tight_images_without_any_padding
+[ ok ] bad_arguments_are_rejected
+[ ok ] large_image_matches_scalar_implementation
+
+4269710 checks, 0 failures

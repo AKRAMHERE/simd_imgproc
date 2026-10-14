@@ -1,0 +1,8 @@
+\begin{tabular}{@{}cccc@{}}\toprule
+ & mask for $v_0$ & mask for $v_1$ & mask for $v_2$\\ \midrule
+\textbf{R} & \texttt{ 0  3  6  9 12 15 -- -- -- -- -- -- -- -- -- --} & \texttt{-- -- -- -- -- --  2  5  8 11 14 -- -- -- -- --} & \texttt{-- -- -- -- -- -- -- -- -- -- --  1  4  7 10 13} \\
+\textbf{G} & \texttt{ 1  4  7 10 13 -- -- -- -- -- -- -- -- -- -- --} & \texttt{-- -- -- -- --  0  3  6  9 12 15 -- -- -- -- --} & \texttt{-- -- -- -- -- -- -- -- -- -- --  2  5  8 11 14} \\
+\textbf{B} & \texttt{ 2  5  8 11 14 -- -- -- -- -- -- -- -- -- -- --} & \texttt{-- -- -- -- --  1  4  7 10 13 -- -- -- -- -- --} & \texttt{-- -- -- -- -- -- -- -- -- --  0  3  6  9 12 15} \\
+\bottomrule\end{tabular}
+
+{\footnotesize output byte $i$ = input byte at the listed index; \texttt{--} means index \texttt{0x80} (write 0)}

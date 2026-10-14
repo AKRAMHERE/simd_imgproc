@@ -1,0 +1,86 @@
+\chapter{Testing: how we know it is correct}\label{ch:testing}
+
+Optimised code is dangerous in a specific way: it is full of tricks (shuffles, lane permutes, partial vectors, ring buffers), and a wrong trick often produces output that \emph{looks} right. A test suite for such code has to be designed against the failure modes of SIMD code, not just against ``does it run''. This chapter lists the layers, what each is for, and what the numbers mean.
+
+\section{The layers}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{3.0cm}X@{}}
+\toprule
+layer & what it checks (and the test that does it)\\
+\midrule
+hand-computed examples & tiny images whose result a human can verify on paper: Sobel of a step edge, gray of primary colours. \emph{\code{gray\_known\_values}, \code{sobel\_hand\_computed\_examples}}\\
+exhaustive & all $2^{24}$ colours through gray, no sampling. \emph{\code{gray\_exhaustive\_all\_16777216\_colours}}\\
+properties & statements that follow from the maths and need no reference: Sobel of a constant image is 0; transposing the input transposes the output; inverting the input leaves the output unchanged; a delta kernel shifts the image; the identity kernel returns the input; blur keeps constants. \emph{\code{sobel\_symmetries\_hold}, \code{conv\_delta\_kernel\_shifts\_the\_image}, \dots}\\
+reference equivalence & optimised versus a plain, obviously correct implementation over many sizes (22 widths from 1 to 129 chosen around the vector sizes 16, 32 and 64), strides, image contents and thread counts (1 to 8 for gray and Sobel; up to 200 in the dedicated thread test). \emph{the \code{\dots\_matches\_reference\_\dots} tests}\\
+bit exactness & AVX2 $=$ FMA reference; scalar $=$ autovec; exact (binomial) kernels with zero tolerance. \emph{\code{conv\_avx2\_is\_bit\_identical\_to\_the\_fma\_reference}, \code{conv\_binomial\_kernels\_are\_exact\_in\_every\_implementation}}\\
+numerical bound & observed float error versus the proven bound. \emph{\code{conv\_float\_error\_is\_within\_the\_theoretical\_bound}}\\
+memory safety & images with no padding at all, run under AddressSanitizer; the padding bytes must be untouched. \emph{\code{tight\_images\_without\_any\_padding}, \code{outputs\_never\_touch\_the\_row\_padding}, \code{make asan-test}}\\
+API contract & mismatched sizes, overlapping source and destination, even kernels and NaN weights must throw. \emph{\code{bad\_arguments\_are\_rejected}}\\
+independent implementation & a second implementation by other libraries, in another language: NumPy and SciPy (and OpenCV where installed). \emph{\code{python/crosscheck.py}}\\
+tests of the tests & seed one deliberate bug at a time and demand that the suite fails. \emph{\code{scripts/mutation\_test.sh}}\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The suite has \testGroups\ test groups and executes \testChecks\ individual checks (a check is one comparison of a pixel, a size or a property); the last run reported \testFailures\ failures. The check count is dominated by the exhaustive gray test and the pixel-by-pixel comparisons; it is not a quality metric on its own, and the guide does not present it as one.
+
+\section{Why the edge sizes matter most}
+
+A vector loop processes $V$ pixels at a time (16 for gray and Sobel, 64 for the convolution block). The tail of the row, $w \bmod V$ pixels, is handled by a different code path. Almost all real SIMD bugs live in these paths: the last vector reads past the end, the tail is skipped, the block is partially written. So the tests are parameterised by width: a list of widths from 1 to 129 clustered around 16, 32, 64 (for example 15, 16, 17, 18, 19, 31, \dots, 65, 66), heights 1, 2, 3 and larger (the border logic in $y$ is different for images with fewer rows than the kernel), padded and unpadded strides.
+
+\section{The memory-safety trap: a bug the output cannot show}
+
+Consider this bug in the Sobel kernel: the vector loop condition is \code{x + 16 <= w} instead of \code{x + 16 <= w - 1}. The last vector then loads one byte beyond the row. The computed value of the last pixel is wrong, but the scalar code that finishes the row \emph{overwrites it with the right value}. Output identical, test passes, code wrong: on an image whose last row is followed by an unmapped page the program crashes, and on a threaded run it reads a byte that another thread is writing.
+
+How the suite catches it:
+\begin{enumerate}
+\item The image allocator requests \emph{exactly} the number of bytes needed (via \code{posix\_memalign}, not rounded up), so there is no hidden slack after the last row;
+\item \code{tight\_images\_without\_any\_padding} uses images whose stride equals their width;
+\item AddressSanitizer instruments every load; a one-byte over-read is reported as an error with the exact line.
+\end{enumerate}
+Step 1 was discovered by the mutation test: the first version of the allocator rounded sizes up to a multiple of 64 and hid the over-read, so the seeded bug \emph{survived}. This is exactly the purpose of mutation testing, and the fix (exact allocation) is now part of the library.
+
+\section{Mutation testing: a measurement of the test suite}
+
+A test that has never failed has never been shown to work. \file{scripts/mutation\_test.sh} applies \mutTotal\ small, realistic bugs, one at a time, rebuilds, runs the tests and records whether the suite noticed. A bug that goes unnoticed (a \emph{survivor}) points at a missing test.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}Xl@{}}
+\toprule
+seeded bug & result\\
+\midrule
+\inputrows{snippets/tab_mutation}
+\end{tabularx}
+\end{center}
+
+\mutKilled\ of \mutTotal\ mutants were killed in the final run. Be exact about what that claim covers: twelve hand-picked bugs of the kinds that occur in this code base (wrong constant, off by one, wrong lane order, cache eviction, lost last row, \dots). It is not a statistical coverage figure, and a tool-generated mutation score over thousands of mutants would be a different, stronger statement.
+
+\section{The independent cross-check}
+
+Comparing the optimised code only with the library's own scalar code has a blind spot: if the scalar code and the reference share a misunderstanding of the specification (for example, which way Sobel's signs go, or whether the border is replicated or mirrored), every test passes. \file{python/ref\_numpy.py} implements the same three operations from the specification using NumPy and \code{scipy.ndimage.correlate} (float64, \code{mode='nearest'} for the replicated border, \code{np.rint} for ties to even). The script \file{crosscheck.py} runs the command-line tool for each implementation and thread count on the synthetic and the real test images, and compares:
+\begin{itemize}
+\item gray and Sobel, and convolution with exact kernels (identity, binomial, sharpen, emboss): must be \textbf{identical};
+\item box and Gaussian kernels (whose float weights are not exact): at most one grey level of difference.
+\end{itemize}
+The last run made \crossComparisons\ comparisons with \crossMismatches\ mismatches; of the pixels from the non-exact kernels, \crossApproxPct\,\% differed by one level and none by more (the largest difference observed is \crossApproxWorst).
+
+\begin{warn}[Limits of this suite]
+Not covered, deliberately or for lack of time: fuzzing with a coverage-guided tool (libFuzzer would be the natural next step), a continuous-integration setup, 16-bit or float images, other border modes, images wider than $2^{31}$ bytes, and testing on a CPU without AVX2 (the AVX2 tests are skipped there; the scalar paths still run). The thread-count tests show equal \emph{output} for 1 to 200 threads; they do not prove the absence of data races in a formal sense, though the design (each thread writes only its own rows and only reads the source) leaves no shared writable state to race on. Say so if asked.
+\end{warn}
+
+\section{How to run everything}
+
+\begin{lstlisting}[style=shell]
+make test                 # build + 24 test groups
+make asan-test            # same tests under AddressSanitizer + UBSan (slower)
+python3 python/make_test_images.py   # (re)generate data/*.pgm / *.ppm
+python3 python/crosscheck.py         # independent NumPy/SciPy comparison
+bash scripts/mutation_test.sh > results/mutation_results.txt   # 12 seeded bugs
+\end{lstlisting}
+
+\begin{sound}
+``I tested at five levels: hand-computed examples, an exhaustive loop over all 16.7 million colours for gray, properties like transpose and invert symmetry for Sobel, bit-exact comparison against independent references for every edge size and thread count, and a NumPy/SciPy cross-check. Then I measured the suite itself with mutation testing: of twelve seeded bugs it initially missed one, an over-read that a scalar tail silently repaired, because my allocator padded allocations. I fixed the allocator, added an unpadded-image test and an AddressSanitizer build, and now all twelve are caught.''
+\end{sound}

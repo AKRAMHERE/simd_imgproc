@@ -1,0 +1,63 @@
+\chapter{AVX2 Sobel, line by line}\label{ch:sobel}
+
+Recall: $G_x=(a_2-a_0)+2(b_2-b_0)+(c_2-c_0)$ and $G_y=(c_0+2c_1+c_2)-(a_0+2a_1+a_2)$, where $a,b,c$ are the rows above, at and below the pixel, and the index $0,1,2$ means column $x-1,x,x+1$.
+
+\section{Vectorizing across pixels}
+
+For one pixel this needs 8 neighbours. For 16 \emph{adjacent} pixels it needs 16-byte loads from each of the three rows at three column offsets: $x-1$, $x$ and $x+1$. Because loads may start at any address, ``the same row shifted by one pixel'' is just another load. That is the key trick of SIMD filtering: instead of shuffling data inside registers, load the row three times at three offsets.
+
+\begin{center}
+\begin{tikzpicture}[x=0.36cm,y=0.65cm,font=\scriptsize]
+\foreach \i in {0,...,19} {\node[draw,minimum size=0.36cm,inner sep=0,fill=gray!10] at (\i,0) {};}
+\node[anchor=east] at (-0.6,0) {row $b$};
+\draw[thick,accent] (0.5-0.5,-0.55) rectangle (16.5-0.5+0,-0.85+0.0);
+\node[font=\tiny,accent,anchor=west] at (17,-0.70) {load at $x-1$ $\to a_0$ (16 bytes)};
+\draw[thick,soundfg] (1.5-0.5,-1.05) rectangle (17.5-0.5,-1.35);
+\node[font=\tiny,soundfg,anchor=west] at (18,-1.20) {load at $x$ $\to a_1$};
+\draw[thick,warnfg] (2.5-0.5,-1.55) rectangle (18.5-0.5,-1.85);
+\node[font=\tiny,warnfg,anchor=west] at (19,-1.70) {load at $x+1$ $\to a_2$};
+\end{tikzpicture}
+\end{center}
+
+Each loaded byte vector is widened to sixteen 16-bit numbers (\code{cvtepu8\_epi16} straight from memory), because the sums exceed 255. The row in the middle ($b$) needs only $b_0$ and $b_2$ (its centre pixel has weight 0 in $G_x$ and in $G_y$): 8 loads per 16 pixels.
+
+\section{The arithmetic in 16-bit lanes}
+
+\begin{enumerate}
+\item $G_x=(a_2-a_0)+(c_2-c_0)+2(b_2-b_0)$; doubling is an addition of the value to itself.
+\item $G_y=(c_0+c_2+2c_1)-(a_0+a_2+2a_1)$.
+\item $m=|G_x|+|G_y|$ with \code{abs\_epi16} and \code{add\_epi16}.
+\end{enumerate}
+All of these fit in signed 16-bit: $|G_x|,|G_y|\le1020$ and $m\le2040$ (Chapter~\ref{ch:math}).
+
+\section{Clamping and packing for free}
+
+\code{packus\_epi16} converts int16 to uint8 \emph{with saturation}: negative values would become 0 and values above 255 become 255. Since $m\ge0$, the result is exactly $\min(m,255)$: the clamp of the formula costs no extra instruction.
+
+But \code{packus} works separately inside the two 128-bit lanes:
+\begin{center}
+\begin{tikzpicture}[x=0.45cm,y=0.7cm,font=\tiny]
+\node[anchor=east,font=\scriptsize] at (-0.3,1.6) {\code{mag} (16 $\times$ int16)};
+\foreach \i in {0,...,15} {\node[draw,minimum size=0.45cm,inner sep=0,fill=\ifnum\i<8 plainbg\else warnbg\fi] at (\i,1.6) {\i};}
+\draw[dashed] (7.5,1.2) -- (7.5,2.0);
+\node[anchor=east,font=\scriptsize] at (-0.3,0.2) {\code{packus(mag,mag)}};
+\foreach \i/\v in {0/0,1/1,2/2,3/3,4/4,5/5,6/6,7/7,8/0,9/1,10/2,11/3,12/4,13/5,14/6,15/7,16/8,17/9,18/10,19/11,20/12,21/13,22/14,23/15,24/8,25/9,26/10,27/11,28/12,29/13,30/14,31/15} {
+  \node[draw,minimum size=0.45cm,inner sep=0,fill=\ifnum\i<16 plainbg\else warnbg\fi] at (\i*0.5,0.2) {\v};}
+\node[anchor=east,font=\scriptsize] at (-0.3,-1.2) {after \code{permute4x64(...,0x08)}};
+\foreach \i/\v in {0/0,1/1,2/2,3/3,4/4,5/5,6/6,7/7,8/8,9/9,10/10,11/11,12/12,13/13,14/14,15/15} {
+  \node[draw,minimum size=0.45cm,inner sep=0,fill=soundbg] at (\i,-1.2) {\v};}
+\end{tikzpicture}
+\end{center}
+The upper picture shows which pixel each byte holds. After \code{packus(mag,mag)} the low lane holds pixels $0..7$ twice and the high lane pixels $8..15$ twice (as 64-bit groups: $[0..7],[0..7],[8..15],[8..15]$). \code{permute4x64} with immediate \code{0x08} selects 64-bit group 0 and group 2 into the low 128 bits: pixels $0..15$ in order. One 16-byte store writes them.
+
+\section{The complete kernel}
+
+\lstinputlisting{snippets/code_avx2_sobel.cpp}
+
+\begin{plain}
+\textbf{Borders and tails.} Rows above the first and below the last are handled by pointing the row pointers at the first/last row (replication), so the vector loop needs no special case in $y$. In $x$: pixel 0 and pixel $w-1$ need clamped column indices, so they are computed by the scalar helper; the vector loop runs over $x=1,17,33,\dots$ as long as its widest load ($x+16$) stays within the row ($x+16\le w-1$); the rest uses the scalar helper. A tempting off-by-one (\code{x + 16 <= w}) would let the last vector read one byte beyond the row \emph{and be silently corrected} by the scalar write of the last pixel. Only the sanitizer build catches that kind of bug, which is why the test suite includes images with no padding and the \code{make asan-test} target (Chapter~\ref{ch:testing}).
+\end{plain}
+
+\begin{sound}
+``Sobel is vectorized across 16 adjacent pixels with unaligned loads of each row at offsets $-1,0,+1$, 16-bit signed arithmetic (the maximum is 2040), absolute values, and \code{packus} which gives the clamp to 255 for free. \code{packus} works per 128-bit lane, so a \code{permute4x64} restores pixel order. The borders and the tail use the scalar helper, and I check that no vector load goes past the end of the row with AddressSanitizer on images with no padding.''
+\end{sound}
