@@ -11,9 +11,6 @@ Three image operations, each in three implementations and with optional OpenMP r
 Implementations: `Impl::Scalar` (auto-vectorizer off), `Impl::AutoVec` (same source, vectorizer on), `Impl::Avx2` (intrinsics, run-time CPU check).
 Border: replicate (clamp to edge). Images: 8-bit, row stride with 64-byte-aligned rows.
 
-The full explanation (maths, code walkthrough, cache and numerics chapters, benchmark method, bwUniCluster guide,
-interview material) is in `SIMD_Image_Processing_Guide.pdf`; its LaTeX sources are in `docs/`.
-
 ## Quick start
 
 ```bash
@@ -61,12 +58,6 @@ Results land in `results/<partition>/`. Turn them into the guide's figures/table
 `python3 python/make_figures.py --results results/cpu_il --out results/cpu_il/report`.
 Details, queue limits and troubleshooting: guide chapter 15.
 
-## What is and is not measured
-
-`results/sandbox_example/` holds timings from a 2-core virtual machine in the sandbox where the code was written. They show how
-the experiments look; they are **not** bwUniCluster numbers. `results/sandbox_example/firstrun/` keeps an earlier pass of the same
-experiments (the scalar baseline differed between passes, see guide chapter 13). `results/test_log.txt`,
-`crosscheck_log.txt` and `mutation_results.txt` are the logs of the corresponding runs.
 
 ## Layout
 
