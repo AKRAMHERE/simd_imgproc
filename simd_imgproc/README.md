@@ -53,18 +53,3 @@ sbatch slurm/01_build_test.sbatch      # build, tests, ASAN tests, NumPy cross-c
 bash slurm/submit_all.sh               # 02 benchmarks (2 cores) and 03 OpenMP scaling (32 cores) on cpu_il and cpu
 sbatch slurm/04_profile.sbatch         # vectorization report + gprof (dev_cpu)
 ```
-
-Results land in `results/<partition>/`. Turn them into the guide's figures/tables with
-`python3 python/make_figures.py --results results/cpu_il --out results/cpu_il/report`.
-Details, queue limits and troubleshooting: guide chapter 15.
-
-
-## Layout
-
-`include/simdip/` API · `src/` implementations · `apps/` CLI and benchmark · `tests/` test suite · `python/` reference,
-cross-check, experiments, figures · `scripts/` mutation test · `slurm/` cluster jobs · `docs/` guide sources · `data/` generated test images.
-
-## Known limits
-
-8-bit images only; one border mode; square odd kernels without separable-kernel shortcut; no AVX-512 path; no row blocking in
-the convolution (the next optimization step); thread-count tests show identical output, they are not a formal race-freedom proof.
